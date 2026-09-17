@@ -33,6 +33,7 @@ module FastMcp
       # Apply filters and register items
       register_filtered_tools(filtered_server, request)
       register_filtered_resources(filtered_server, request)
+      filtered_server.register_prompts(*@prompts.values)
 
       filtered_server
     end

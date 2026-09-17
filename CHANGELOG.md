@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0.pre.1] - 2026-09-17
+
+### Added
+
+- Native MCP prompt registration with `prompts/list` and `prompts/get`.
+- Prompt capability advertisement and prompt preservation on filtered servers.
+- Tool removal and `notifications/tools/list_changed` support.
+- RVM-isolated contributor setup and expanded server/stdio integration coverage.
+
 ## [1.6.0] - 2025-09-28
 
 ### Added

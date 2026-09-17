@@ -28,11 +28,31 @@ Fast MCP solves all these problems by providing a clean, Ruby-focused implementa
 
 - 🛠️ **Tools API** - Let AI models call your Ruby functions securely, with in-depth argument validation through [Dry-Schema](https://github.com/dry-rb/dry-schema).
 - 📚 **Resources API** - Share data between your app and AI models
+- 💬 **Prompts API** - Publish reusable, argument-aware workflow prompts
 - 🔄 **Multiple Transports** - Choose from STDIO, HTTP, or SSE based on your needs
 - 🧩 **Framework Integration** - Works seamlessly with Rails, Sinatra or any Rack app.
 - 🔒 **Authentication Support** - Secure your AI-powered endpoints with ease
 - 🚀 **Real-time Updates** - Subscribe to changes for interactive applications
 - 🎯 **Dynamic Filtering** - Control tool/resource access based on request context (permissions, API versions, etc.)
+
+### Prompt example
+
+```ruby
+class RecallPrompt < FastMcp::Prompt
+  prompt_name 'recall'
+  description 'Recall project knowledge'
+  argument :topic, description: 'Subject to recall', required: true
+
+  def messages(topic:)
+    [{ role: 'user', content: { type: 'text', text: "Recall #{topic}" } }]
+  end
+end
+
+server.register_prompt(RecallPrompt)
+```
+
+Clients discover prompts with `prompts/list` and render one with
+`prompts/get`.
 
 ## 💎 What Makes FastMCP Great
 

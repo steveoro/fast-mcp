@@ -14,6 +14,7 @@ end
 require_relative 'mcp/tool'
 require_relative 'mcp/server'
 require_relative 'mcp/resource'
+require_relative 'mcp/prompt'
 require_relative 'mcp/railtie' if defined?(Rails::Railtie)
 
 # Require all transport files
@@ -87,6 +88,22 @@ module FastMcp
   def self.register_tools(*tools)
     self.server ||= FastMcp::Server.new(name: 'mcp-server', version: '1.0.0')
     self.server.register_tools(*tools)
+  end
+
+  # Register one prompt with the MCP server.
+  # @param prompt [Class<FastMcp::Prompt>] prompt class to register
+  # @return [Class<FastMcp::Prompt>] the registered prompt
+  def self.register_prompt(prompt)
+    self.server ||= FastMcp::Server.new(name: 'mcp-server', version: '1.0.0')
+    self.server.register_prompt(prompt)
+  end
+
+  # Register multiple prompts with the MCP server.
+  # @param prompts [Array<Class<FastMcp::Prompt>>] prompt classes to register
+  # @return [Array<Class<FastMcp::Prompt>>] registered prompt classes
+  def self.register_prompts(*prompts)
+    self.server ||= FastMcp::Server.new(name: 'mcp-server', version: '1.0.0')
+    self.server.register_prompts(*prompts)
   end
 
   # Register a resource with the MCP server

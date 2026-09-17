@@ -55,6 +55,18 @@ RSpec.describe 'MCP Server Integration' do
     end
   end
 
+  let(:recall_prompt) do
+    Class.new(FastMcp::Prompt) do
+      prompt_name 'recall'
+      description 'Recall a topic'
+      argument :topic, required: true
+
+      def messages(topic:)
+        [{ role: 'user', content: { type: 'text', text: "Recall #{topic}" } }]
+      end
+    end
+  end
+
   before do
     # Register the test tool
     server.register_tool(greet_tool)
@@ -62,6 +74,7 @@ RSpec.describe 'MCP Server Integration' do
     # Register the test resources
     server.register_resource(counter_resource_class)
     server.register_resource(templated_resource_class)
+    server.register_prompt(recall_prompt)
 
     # Set the transport
     server.instance_variable_set(:@transport, transport)
@@ -96,6 +109,27 @@ RSpec.describe 'MCP Server Integration' do
       expect(io_as_json['result']['serverInfo']['name']).to eq('test-server')
       expect(io_as_json['result']['serverInfo']['version']).to eq('1.0.0')
       expect(io_as_json['id']).to eq(1)
+    end
+
+    it 'lists and renders prompts over stdio transport' do
+      server.handle_request(
+        JSON.generate(jsonrpc: '2.0', method: 'prompts/list', id: 20)
+      )
+      listed = JSON.parse($stdout.string.lines.last)
+
+      expect(listed.dig('result', 'prompts', 0, 'name')).to eq('recall')
+
+      server.handle_request(
+        JSON.generate(
+          jsonrpc: '2.0',
+          method: 'prompts/get',
+          params: { name: 'recall', arguments: { topic: 'GraphMem' } },
+          id: 21
+        )
+      )
+      rendered = JSON.parse($stdout.string.lines.last)
+
+      expect(rendered.dig('result', 'messages', 0, 'content', 'text')).to eq('Recall GraphMem')
     end
 
     it 'responds nil to notifications/initialized requests' do

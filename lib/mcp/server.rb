@@ -11,10 +11,10 @@ require_relative 'logger'
 require_relative 'server_filtering'
 
 module FastMcp
-  class Server
+  class Server # rubocop:disable Metrics/ClassLength
     include ServerFiltering
 
-    attr_reader :name, :version, :tools, :resources, :capabilities
+    attr_reader :name, :version, :tools, :resources, :prompts, :capabilities
 
     DEFAULT_CAPABILITIES = {
       resources: {
@@ -23,6 +23,9 @@ module FastMcp
       },
       tools: {
         listChanged: true
+      },
+      prompts: {
+        listChanged: false
       }
     }.freeze
 
@@ -31,6 +34,7 @@ module FastMcp
       @version = version
       @tools = {}
       @resources = []
+      @prompts = {}
       @resource_subscriptions = {}
       @logger = logger
       @request_id = 0
@@ -59,6 +63,18 @@ module FastMcp
       @tools[tool.tool_name] = tool
       @logger.debug("Registered tool: #{tool.tool_name}")
       tool.server = self
+      notify_tool_list_changed if @transport
+      tool
+    end
+
+    # Removes a tool and notifies initialized clients.
+    #
+    # @param tool_name [String, Symbol] registered protocol name
+    # @return [Boolean] whether a tool was removed
+    def remove_tool(tool_name) # rubocop:disable Naming/PredicateMethod
+      removed = @tools.delete(tool_name.to_s)
+      notify_tool_list_changed if removed && @transport
+      !removed.nil?
     end
 
     # Register multiple resources at once
@@ -79,6 +95,34 @@ module FastMcp
       notify_resource_list_changed if @transport
 
       resource
+    end
+
+    # Registers multiple prompt classes.
+    #
+    # @param prompts [Array<Class<FastMcp::Prompt>>]
+    # @return [Array<Class<FastMcp::Prompt>>]
+    def register_prompts(*prompts)
+      prompts.each { |prompt| register_prompt(prompt) }
+    end
+
+    # Registers one prompt class.
+    #
+    # @param prompt [Class<FastMcp::Prompt>]
+    # @return [Class<FastMcp::Prompt>]
+    def register_prompt(prompt)
+      @prompts[prompt.prompt_name] = prompt
+      prompt.server = self
+      @logger.debug("Registered prompt: #{prompt.prompt_name}")
+      prompt
+    end
+
+    # Removes one prompt. Prompt list-change notifications are intentionally
+    # unsupported while the prompts capability advertises listChanged: false.
+    #
+    # @param prompt_name [String, Symbol]
+    # @return [Boolean] whether a prompt was removed
+    def remove_prompt(prompt_name) # rubocop:disable Naming/PredicateMethod
+      !@prompts.delete(prompt_name.to_s).nil?
     end
 
     def on_error_result(&block)
@@ -139,7 +183,7 @@ module FastMcp
     end
 
     # Handle incoming JSON-RPC request
-    def handle_request(json_str, headers: {}) # rubocop:disable Metrics/MethodLength
+    def handle_request(json_str, headers: {}) # rubocop:disable Metrics/MethodLength, Metrics/CyclomaticComplexity
       begin
         request = JSON.parse(json_str)
       rescue JSON::ParserError, TypeError
@@ -166,6 +210,10 @@ module FastMcp
         handle_tools_list(id)
       when 'tools/call'
         handle_tools_call(params, headers, id)
+      when 'prompts/list'
+        handle_prompts_list(id)
+      when 'prompts/get'
+        handle_prompts_get(params, id)
       when 'resources/list'
         handle_resources_list(id)
       when 'resources/templates/list'
@@ -281,6 +329,35 @@ module FastMcp
       @logger.info('Client initialized, beginning normal operation')
 
       nil
+    end
+
+    # Handle prompts/list request.
+    def handle_prompts_list(id)
+      send_result({ prompts: @prompts.values.map(&:metadata) }, id)
+    end
+
+    # Handle prompts/get request.
+    def handle_prompts_get(params, id)
+      name = params['name']
+      return send_error(-32_602, 'Invalid params: missing prompt name', id) if name.nil? || name.empty?
+
+      prompt = @prompts[name]
+      return send_error(-32_602, "Prompt not found: #{name}", id) unless prompt
+
+      arguments = params['arguments'] || {}
+      missing = prompt.arguments.filter_map do |definition|
+        definition[:name] if definition[:required] && !arguments.key?(definition[:name])
+      end
+      if missing.any?
+        return send_error(
+          -32_602,
+          "Invalid params: missing required prompt arguments: #{missing.join(', ')}",
+          id
+        )
+      end
+
+      messages = prompt.new.messages(**symbolize_keys(arguments))
+      send_result({ description: prompt.description.to_s, messages: messages }, id)
     end
 
     # Handle tools/list request
@@ -438,6 +515,17 @@ module FastMcp
       }
 
       @transport.send_message(notification)
+    end
+
+    # Notify clients that tools/list should be refreshed.
+    def notify_tool_list_changed
+      return unless @client_initialized
+
+      @transport.send_message(
+        jsonrpc: '2.0',
+        method: 'notifications/tools/list_changed',
+        params: {}
+      )
     end
 
     # Send a JSON-RPC result response

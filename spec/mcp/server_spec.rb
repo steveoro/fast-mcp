@@ -8,6 +8,41 @@ RSpec.describe FastMcp::Server do
       expect(server.name).to eq('test-server')
       expect(server.version).to eq('1.0.0')
       expect(server.tools).to be_empty
+      expect(server.prompts).to be_empty
+      expect(server.capabilities).to include(
+        tools: { listChanged: true },
+        prompts: { listChanged: false }
+      )
+    end
+  end
+
+  describe 'tool list-change notifications' do
+    let(:transport) { instance_double('Transport', send_message: nil) }
+    let(:tool_class) do
+      Class.new(FastMcp::Tool) do
+        tool_name 'notified-tool'
+      end
+    end
+
+    before do
+      server.transport = transport
+      server.instance_variable_set(:@client_initialized, true)
+    end
+
+    it 'notifies initialized clients when tools are registered or removed' do
+      server.register_tool(tool_class)
+      server.remove_tool('notified-tool')
+
+      expect(transport).to have_received(:send_message).with(
+        jsonrpc: '2.0',
+        method: 'notifications/tools/list_changed',
+        params: {}
+      ).twice
+    end
+
+    it 'returns false when removing an unknown tool' do
+      expect(server.remove_tool('missing')).to be(false)
+      expect(transport).not_to have_received(:send_message)
     end
   end
 
@@ -73,6 +108,18 @@ RSpec.describe FastMcp::Server do
 
         def call(user:)
           "#{user[:first_name]} #{user[:last_name]}"
+        end
+      end
+    end
+
+    let(:recall_prompt_class) do
+      Class.new(FastMcp::Prompt) do
+        prompt_name 'recall'
+        description 'Recall knowledge'
+        argument :topic, description: 'Subject', required: true
+
+        def messages(topic:)
+          [{ role: 'user', content: { type: 'text', text: "Recall #{topic}" } }]
         end
       end
     end
@@ -289,6 +336,54 @@ RSpec.describe FastMcp::Server do
 
         expect(server).to receive(:send_error).with(-32_602, 'Invalid params: missing tool name', 1)
         server.handle_request(request)
+      end
+    end
+
+    context 'with prompt requests' do
+      before { server.register_prompt(recall_prompt_class) }
+
+      it 'lists registered prompts' do
+        expect(server).to receive(:send_result) do |result, id|
+          expect(id).to eq(1)
+          expect(result[:prompts]).to eq([ recall_prompt_class.metadata ])
+        end
+
+        server.handle_request({ jsonrpc: '2.0', method: 'prompts/list', id: 1 }.to_json)
+      end
+
+      it 'renders a prompt with arguments' do
+        expect(server).to receive(:send_result).with(
+          {
+            description: 'Recall knowledge',
+            messages: [{ role: 'user', content: { type: 'text', text: 'Recall GraphMem' } }]
+          },
+          2
+        )
+
+        server.handle_request(
+          {
+            jsonrpc: '2.0',
+            method: 'prompts/get',
+            params: { name: 'recall', arguments: { topic: 'GraphMem' } },
+            id: 2
+          }.to_json
+        )
+      end
+
+      it 'rejects missing prompt arguments and unknown prompts' do
+        expect(server).to receive(:send_error).with(
+          -32_602,
+          'Invalid params: missing required prompt arguments: topic',
+          3
+        )
+        server.handle_request(
+          { jsonrpc: '2.0', method: 'prompts/get', params: { name: 'recall' }, id: 3 }.to_json
+        )
+
+        expect(server).to receive(:send_error).with(-32_602, 'Prompt not found: missing', 4)
+        server.handle_request(
+          { jsonrpc: '2.0', method: 'prompts/get', params: { name: 'missing' }, id: 4 }.to_json
+        )
       end
     end
 
