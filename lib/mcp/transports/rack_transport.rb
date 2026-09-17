@@ -134,6 +134,15 @@ module FastMcp
         end
       end
 
+      # Clears request-filtered server copies after registration/config changes.
+      #
+      # @return [Integer] number of cached server copies removed
+      def clear_filtered_servers_cache
+        size = @filtered_servers_cache.size
+        @filtered_servers_cache.clear
+        size
+      end
+
       private
 
       def valid_client_ip?(request)
@@ -545,7 +554,15 @@ module FastMcp
                          .transform_keys { |k| k.sub('HTTP_', '').downcase.tr('_', '-') }
 
         # Let the specific server handle the JSON request directly
-        response = server.handle_request(body, headers: headers) || []
+        response =
+          if server.respond_to?(:with_request_context)
+            server.with_request_context(transport: self) do
+              server.handle_request(body, headers: headers)
+            end
+          else
+            server.handle_request(body, headers: headers)
+          end
+        response ||= []
 
         # Return the JSON response
         [200, { 'Content-Type' => 'application/json' }, response]

@@ -296,6 +296,41 @@ module FastMcp
         @collected_metadata = @metadata_context.metadata
       end
 
+      # Defines an output schema with the same Dry::Schema DSL as `.arguments`.
+      #
+      # @yield schema definition block
+      # @return [Dry::Schema::JSON]
+      def output(&block)
+        @output_metadata_context = MetadataContext.new
+        @output_schema = MetadataContext.with_context(@output_metadata_context) do
+          Dry::Schema.JSON(&block)
+        end
+        @collected_output_metadata = @output_metadata_context.metadata
+        @output_schema
+      end
+
+      # Sets or returns a static JSON Schema output declaration.
+      #
+      # @param schema [Hash, nil] JSON Schema; omit to read the current schema
+      # @return [Hash, Dry::Schema::JSON, nil]
+      def output_schema(schema = nil)
+        @static_output_schema = schema if schema
+        @static_output_schema || @output_schema
+      end
+
+      # Returns the output declaration for MCP tools/list.
+      #
+      # @return [Hash, nil]
+      def output_schema_to_json
+        return @static_output_schema if @static_output_schema
+        return unless @output_schema
+
+        SchemaMetadataProcessor.process(
+          @output_schema,
+          @collected_output_metadata || {}
+        )
+      end
+
       def input_schema
         @input_schema ||= Dry::Schema.JSON
       end

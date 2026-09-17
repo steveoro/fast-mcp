@@ -33,7 +33,9 @@ module FastMcp
       # Process an incoming message
       # This is a helper method that can be used by subclasses
       def process_message(message, headers: {})
-        server.handle_request(message, headers: headers)
+        return server.handle_request(message, headers: headers) unless server.respond_to?(:with_request_context)
+
+        server.with_request_context(transport: self) { server.handle_request(message, headers: headers) }
       end
     end
   end

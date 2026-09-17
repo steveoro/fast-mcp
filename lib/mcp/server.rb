@@ -258,6 +258,34 @@ module FastMcp
       @resources.find { |r| r.match(uri) }
     end
 
+    # Runs server dispatch with request-scoped response routing.
+    #
+    # Nested contexts are restored in ensure, and contexts are isolated by
+    # server instance within the current thread.
+    #
+    # @param transport [#send_message] transport for responses in this request
+    # @param metadata [Hash] optional transport/session context
+    # @yieldreturn [Object] caller block result
+    # @return [Object] caller block result
+    def with_request_context(transport:, **metadata)
+      contexts = Thread.current[:fast_mcp_request_contexts] ||= {}.compare_by_identity
+      previous = contexts[self]
+      contexts[self] = metadata.merge(transport: transport)
+      yield
+    ensure
+      if contexts
+        previous ? contexts[self] = previous : contexts.delete(self)
+        Thread.current[:fast_mcp_request_contexts] = nil if contexts.empty?
+      end
+    end
+
+    # Returns the current request context for this server/thread.
+    #
+    # @return [Hash, nil]
+    def current_request_context
+      Thread.current[:fast_mcp_request_contexts]&.[](self)
+    end
+
     private
 
     PROTOCOL_VERSION = '2024-11-05'
@@ -368,6 +396,8 @@ module FastMcp
           description: tool.description || '',
           inputSchema: tool.input_schema_to_json || { type: 'object', properties: {}, required: [] }
         }
+        output_schema = tool.output_schema_to_json
+        tool_info[:outputSchema] = output_schema if output_schema
 
         # Add annotations if they exist
         annotations = tool.annotations
@@ -409,7 +439,7 @@ module FastMcp
         result, metadata = tool_instance.call_with_schema_validation!(**symbolized_args)
 
         # Format and send the result
-        send_formatted_result(result, id, metadata)
+        send_formatted_result(result, id, metadata, tool: tool)
       rescue FastMcp::Tool::InvalidArgumentsError => e
         @logger.error("Invalid arguments for tool #{tool_name}: #{e.message}")
         send_error_result(e.message, id)
@@ -420,10 +450,18 @@ module FastMcp
     end
 
     # Format and send successful result
-    def send_formatted_result(result, id, metadata)
+    def send_formatted_result(result, id, metadata, tool: nil)
       # Check if the result is already in the expected format
       if result.is_a?(Hash) && result.key?(:content)
         send_result(result, id, metadata: metadata)
+      elsif tool&.output_schema_to_json && result.is_a?(Hash)
+        structured_content = JSON.parse(JSON.generate(result))
+        formatted_result = {
+          content: [{ type: 'text', text: JSON.generate(structured_content) }],
+          structuredContent: structured_content,
+          isError: false
+        }
+        send_result(formatted_result, id, metadata: metadata)
       else
         # Format the result according to the MCP specification
         formatted_result = {
@@ -558,9 +596,10 @@ module FastMcp
 
     # Send a JSON-RPC response
     def send_response(response)
-      if @transport
+      response_transport = current_request_context&.fetch(:transport, nil) || @transport
+      if response_transport
         @logger.debug("Sending response: #{response.inspect}")
-        @transport.send_message(response)
+        response_transport.send_message(response)
       else
         @logger.warn("No transport available to send response: #{response.inspect}")
         @logger.warn("Transport: #{@transport.inspect}, transport_klass: #{@transport_klass.inspect}")

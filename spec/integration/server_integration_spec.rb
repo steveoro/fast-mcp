@@ -67,9 +67,25 @@ RSpec.describe 'MCP Server Integration' do
     end
   end
 
+  let(:structured_tool) do
+    Class.new(FastMcp::Tool) do
+      tool_name 'structured'
+      output_schema(
+        type: 'object',
+        properties: { value: { type: 'integer' } },
+        required: ['value']
+      )
+
+      def call
+        { value: 42 }
+      end
+    end
+  end
+
   before do
     # Register the test tool
     server.register_tool(greet_tool)
+    server.register_tool(structured_tool)
 
     # Register the test resources
     server.register_resource(counter_resource_class)
@@ -147,8 +163,10 @@ RSpec.describe 'MCP Server Integration' do
       io_as_json = JSON.parse(io_response.read)
       expect(io_as_json['jsonrpc']).to eq('2.0')
       expect(io_as_json['result']['tools']).to be_an(Array)
-      expect(io_as_json['result']['tools'].length).to eq(1)
-      expect(io_as_json['result']['tools'][0]['name']).to eq('greet')
+      expect(io_as_json['result']['tools'].map { |tool| tool['name'] }).to contain_exactly(
+        'greet',
+        'structured'
+      )
       expect(io_as_json['id']).to eq(1)
     end
 
@@ -161,6 +179,21 @@ RSpec.describe 'MCP Server Integration' do
       expect(io_as_json['jsonrpc']).to eq('2.0')
       expect(io_as_json['result']['content'][0]['text']).to eq('Hello, World!')
       expect(io_as_json['id']).to eq(1)
+    end
+
+    it 'returns structured tool output with mirrored JSON text' do
+      request = {
+        jsonrpc: '2.0',
+        method: 'tools/call',
+        params: { name: 'structured', arguments: {} },
+        id: 22
+      }
+      response = server.handle_request(JSON.generate(request))
+
+      response.rewind
+      result = JSON.parse(response.read).fetch('result')
+      expect(result['structuredContent']).to eq('value' => 42)
+      expect(JSON.parse(result.dig('content', 0, 'text'))).to eq(result['structuredContent'])
     end
 
     it 'lists resources' do

@@ -11,6 +11,7 @@ Tools are a core concept in the Model Context Protocol (MCP). They allow you to 
   - [Argument Types](#argument-types)
   - [Argument Validation](#argument-validation)
   - [Default Values](#default-values)
+- [Output Schemas and Structured Content](#output-schemas-and-structured-content)
 - [Calling Tools From Another Tool](#calling-tools-from-another-tool)
 - [Advanced Tool Features](#advanced-tool-features)
   - [Tool Annotations](#tool-annotations)
@@ -237,6 +238,32 @@ end
 ```
 
 You can also implement this in a parent class and the authorization will be inherited by all children. Children may also define their own authorization - in this case, _all_ authorization checks must pass for a caller to be allowed access to the tool.
+
+## Output Schemas and Structured Content
+
+Tools can opt into structured MCP results with either a static JSON Schema or
+the Dry::Schema output DSL:
+
+```ruby
+class StatusTool < FastMcp::Tool
+  output_schema(
+    type: "object",
+    properties: { status: { type: "string" } },
+    required: ["status"]
+  )
+
+  def call
+    { status: "ok" }
+  end
+end
+```
+
+Use `output { required(:status).filled(:string) }` when the Dry DSL is more
+convenient. `tools/list` advertises the declaration as `outputSchema`.
+Schema-enabled Hash results include both `structuredContent` and a JSON text
+content block for backward compatibility. Tools without an output schema keep
+their existing formatting, and custom `{ content: [...] }` results remain an
+escape hatch for images or multiple content blocks.
 
 ## Calling Tools From Another Tool
 Tools can call other tools:

@@ -46,6 +46,37 @@ RSpec.describe FastMcp::Server do
     end
   end
 
+  describe '#with_request_context' do
+    let(:default_transport) { instance_double('DefaultTransport', send_message: nil) }
+    let(:request_transport) { instance_double('RequestTransport', send_message: nil) }
+
+    before { server.transport = default_transport }
+
+    it 'routes responses to the request transport and clears context afterward' do
+      server.with_request_context(transport: request_transport, session_id: 'session-1') do
+        expect(server.current_request_context).to include(session_id: 'session-1')
+        server.send(:send_response, jsonrpc: '2.0', id: 1, result: {})
+      end
+
+      expect(request_transport).to have_received(:send_message)
+      expect(default_transport).not_to have_received(:send_message)
+      expect(server.current_request_context).to be_nil
+    end
+
+    it 'restores nested context even when dispatch raises' do
+      expect do
+        server.with_request_context(transport: default_transport, name: 'outer') do
+          server.with_request_context(transport: request_transport, name: 'inner') do
+            expect(server.current_request_context[:name]).to eq('inner')
+            raise 'boom'
+          end
+        end
+      end.to raise_error('boom')
+
+      expect(server.current_request_context).to be_nil
+    end
+  end
+
   describe '#register_tool' do
     it 'registers a tool with the server' do
       test_tool_class = Class.new(FastMcp::Tool) do
@@ -120,6 +151,22 @@ RSpec.describe FastMcp::Server do
 
         def messages(topic:)
           [{ role: 'user', content: { type: 'text', text: "Recall #{topic}" } }]
+        end
+      end
+    end
+
+    let(:structured_tool_class) do
+      Class.new(FastMcp::Tool) do
+        tool_name 'structured-tool'
+        description 'Returns structured data'
+        output_schema(
+          type: 'object',
+          properties: { answer: { type: 'string' } },
+          required: ['answer']
+        )
+
+        def call
+          { answer: 'forty-two' }
         end
       end
     end
@@ -263,6 +310,20 @@ RSpec.describe FastMcp::Server do
           server.handle_request(request)
         end
       end
+
+      it 'includes outputSchema only for tools that declare one' do
+        server.register_tool(structured_tool_class)
+        request = { jsonrpc: '2.0', method: 'tools/list', id: 1 }.to_json
+
+        expect(server).to receive(:send_result) do |result, _id|
+          structured = result[:tools].find { |tool| tool[:name] == 'structured-tool' }
+          plain = result[:tools].find { |tool| tool[:name] == 'test-tool' }
+          expect(structured[:outputSchema]).to eq(structured_tool_class.output_schema_to_json)
+          expect(plain).not_to have_key(:outputSchema)
+        end
+
+        server.handle_request(request)
+      end
     end
 
     context 'with a tools/call request' do
@@ -336,6 +397,53 @@ RSpec.describe FastMcp::Server do
 
         expect(server).to receive(:send_error).with(-32_602, 'Invalid params: missing tool name', 1)
         server.handle_request(request)
+      end
+
+      it 'emits dual structured and JSON text content for schema-enabled tools' do
+        server.register_tool(structured_tool_class)
+        request = {
+          jsonrpc: '2.0',
+          method: 'tools/call',
+          params: { name: 'structured-tool', arguments: {} },
+          id: 2
+        }.to_json
+
+        expect(server).to receive(:send_result).with(
+          {
+            content: [{ type: 'text', text: '{"answer":"forty-two"}' }],
+            structuredContent: { 'answer' => 'forty-two' },
+            isError: false
+          },
+          2,
+          metadata: {}
+        )
+
+        server.handle_request(request)
+      end
+
+      it 'preserves custom content result hashes even when a schema exists' do
+        custom_tool = Class.new(structured_tool_class) do
+          tool_name 'custom-content-tool'
+
+          def call
+            { content: [{ type: 'text', text: 'custom' }], isError: false }
+          end
+        end
+        server.register_tool(custom_tool)
+
+        expect(server).to receive(:send_result).with(
+          { content: [{ type: 'text', text: 'custom' }], isError: false },
+          3,
+          metadata: {}
+        )
+        server.handle_request(
+          {
+            jsonrpc: '2.0',
+            method: 'tools/call',
+            params: { name: 'custom-content-tool', arguments: {} },
+            id: 3
+          }.to_json
+        )
       end
     end
 
