@@ -19,7 +19,14 @@ module FastMcp
     # +error_formatter+ so it can distinguish a refusal from a genuine failure.
     class UnauthorizedError < StandardError; end
 
-    attr_reader :name, :version, :tools, :resources, :prompts, :capabilities
+    # How a call to a tool the request cannot see is answered.
+    #
+    # :hide reports it as unknown, giving nothing away about what exists. :deny reports it as a
+    # refusal, which is friendlier to an agent that can then explain the situation rather than
+    # assume it mistyped a tool name.
+    FILTER_MODES = [:hide, :deny].freeze
+
+    attr_reader :name, :version, :tools, :resources, :prompts, :capabilities, :filter_mode
 
     DEFAULT_CAPABILITIES = {
       resources: {
@@ -50,11 +57,30 @@ module FastMcp
       @resource_filters = []
       @on_error_result = nil
       @error_formatter = nil
+      @filter_mode = :hide
 
       # Merge with provided capabilities
       @capabilities.merge!(capabilities) if capabilities.is_a?(Hash)
     end
     attr_accessor :transport, :transport_klass, :logger
+
+    # @param mode [Symbol] one of FILTER_MODES
+    # @raise [ArgumentError] on an unknown mode
+    def filter_mode=(mode)
+      mode = mode.to_sym
+      unless FILTER_MODES.include?(mode)
+        raise ArgumentError, "filter_mode must be one of #{FILTER_MODES.join(', ')}, got #{mode.inspect}"
+      end
+
+      @filter_mode = mode
+    end
+
+    # The request currently being served, when a transport supplied one.
+    #
+    # @return [Rack::Request, nil]
+    def current_request
+      current_request_context&.dig(:request)
+    end
 
     # Register multiple tools at once
     # @param tools [Array<Tool>] Tools to register
@@ -359,7 +385,9 @@ module FastMcp
       @logger.debug("Looking for resource with URI: #{uri}")
 
       begin
-        resource = read_resource(uri)
+        # Filtered, so a resource this request cannot see is indistinguishable from one that does
+        # not exist — otherwise knowing a URI would be enough to bypass the filter.
+        resource = visible_resource(uri, current_request)
         return send_error(-32_602, "Resource not found: #{uri}", id) unless resource
 
         @logger.debug("Found resource: #{resource.resource_name}, templated: #{resource.templated?}")
@@ -426,7 +454,7 @@ module FastMcp
 
     # Handle tools/list request
     def handle_tools_list(id)
-      tools_list = @tools.values.map do |tool|
+      tools_list = visible_tools(current_request).map do |tool|
         tool_info = {
           name: tool.tool_name,
           description: tool.description || '',
@@ -462,6 +490,14 @@ module FastMcp
 
       tool = @tools[tool_name]
       return send_error(-32_602, "Tool not found: #{tool_name}", id) unless tool
+
+      # A tool filtered out of this request is not callable either, otherwise tools/list would be
+      # decoration rather than a boundary.
+      unless tool_visible?(tool, current_request)
+        return send_error(-32_602, "Tool not found: #{tool_name}", id) if @filter_mode == :hide
+
+        return send_unauthorized_result(tool_name, id)
+      end
 
       begin
         # Convert string keys to symbols for Ruby
@@ -584,7 +620,7 @@ module FastMcp
 
     # Handle resources/list request
     def handle_resources_list(id)
-      resources_list = @resources.select(&:non_templated?).map(&:metadata)
+      resources_list = visible_resources(current_request).select(&:non_templated?).map(&:metadata)
 
       send_result({ resources: resources_list }, id)
     end
@@ -592,7 +628,7 @@ module FastMcp
     # Handle resources/templates/list request
     def handle_resources_templates_list(id)
       # Collect templated resources
-      templated_resources_list = @resources.select(&:templated?).map(&:metadata)
+      templated_resources_list = visible_resources(current_request).select(&:templated?).map(&:metadata)
 
       send_result({ resourceTemplates: templated_resources_list }, id)
     end
@@ -608,7 +644,7 @@ module FastMcp
         return
       end
 
-      resource = @resources.find { |r| r.match(uri) }
+      resource = visible_resource(uri, current_request)
       return send_error(-32_602, "Resource not found: #{uri}", id) unless resource
 
       # Add to subscriptions

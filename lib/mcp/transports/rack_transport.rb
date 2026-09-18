@@ -141,6 +141,8 @@ module FastMcp
 
       # Clears request-filtered server copies after registration/config changes.
       #
+      # @deprecated Filters are applied in place now, so no copies are cached and this always
+      #   returns 0. Kept so existing callers keep working.
       # @return [Integer] number of cached server copies removed
       def clear_filtered_servers_cache
         size = @filtered_servers_cache.size
@@ -170,9 +172,14 @@ module FastMcp
       end
 
       # Extra values to open the request context with, beyond the transport itself.
+      #
+      # The request travels with the context so the server can apply tool and resource filters in
+      # place, rather than against a cloned server.
       def request_context_for(request)
+        context = { request: request }
         principal = request.env[FastMcp::Authentication::ENV_KEY]
-        principal.nil? ? {} : { principal: principal }
+        context[:principal] = principal unless principal.nil?
+        context
       end
 
       def valid_client_ip?(request)
@@ -649,47 +656,17 @@ module FastMcp
       end
 
       # Get the appropriate server for this request
-      def get_server_for_request(request, env)
+      def get_server_for_request(_request, env)
         # 1. Check for explicit server in env (highest priority)
         if env[SERVER_ENV_KEY]
           @logger.debug("Using server from env[#{SERVER_ENV_KEY}]")
           return env[SERVER_ENV_KEY]
         end
 
-        # 2. Apply filters if configured
-        if @server.contains_filters?
-          @logger.debug('Server has filters, creating filtered copy')
-          # Cache filtered servers to avoid recreating them
-          cache_key = generate_cache_key(request)
-
-          @filtered_servers_cache[cache_key] ||= @server.create_filtered_copy(request)
-          return @filtered_servers_cache[cache_key]
-        end
-
-        # 3. Use the default server
-        @logger.debug('Using default server')
+        # 2. Filters are applied in place by the server, using the request carried in the request
+        #    context, so there is no per-request copy to build, cache or invalidate. Cloning used
+        #    to reassign `tool.server` globally and corrupt per-request contexts.
         @server
-      end
-
-      # Generate a cache key based on filter-relevant request attributes
-      def generate_cache_key(request)
-        # Generate a cache key based on filter-relevant request attributes
-        # This is a simple example - real implementation would be more sophisticated
-        {
-          path: request.path,
-          params: request.params.sort.to_h,
-          headers: extract_relevant_headers(request)
-        }.hash
-      end
-
-      # Extract headers that might be relevant for filtering
-      def extract_relevant_headers(request)
-        relevant_headers = {}
-        ['X-User-Role', 'X-API-Version', 'X-Tenant-ID', 'Authorization'].each do |header|
-          header_key = "HTTP_#{header.upcase.tr('-', '_')}"
-          relevant_headers[header] = request.env[header_key] if request.env[header_key]
-        end
-        relevant_headers
       end
     end
   end

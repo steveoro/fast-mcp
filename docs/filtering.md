@@ -168,9 +168,40 @@ env['fast_mcp.server'] = custom_filtered_server
 
 This takes precedence over any configured filters.
 
-### Caching
+### What Filtering Covers
 
-The RackTransport automatically caches filtered server instances based on request parameters to improve performance. Identical requests will reuse the same filtered server instance.
+Filters apply to every request path, so a filtered item is unreachable rather than merely
+unlisted:
+
+| Path | Behaviour when filtered out |
+|---|---|
+| `tools/list` | Absent |
+| `tools/call` | Refused — see [Filter Modes](#filter-modes) |
+| `resources/list`, `resources/templates/list` | Absent |
+| `resources/read`, `resources/subscribe` | Reported as not found |
+
+A filtered resource answers exactly as an unknown one does, so knowing or guessing a URI reveals
+nothing.
+
+### Filter Modes
+
+`Server#filter_mode` chooses how a refused tool call reads:
+
+```ruby
+server.filter_mode = :deny # default is :hide
+```
+
+- `:hide` reports the tool as unknown, giving nothing away about what exists.
+- `:deny` reports it as a refusal. Friendlier to an agent, which can then explain the situation
+  instead of assuming it mistyped a tool name. When an
+  [error formatter](tools.md#error-formatting) is configured, the refusal is delivered through it
+  as a structured payload.
+
+### Resolving Visibility Directly
+
+`visible_tools(request)`, `visible_resources(request)` and `tool_visible?(tool, request)` answer
+what a given request may see, should you need it outside the normal dispatch path. Pass `nil` for
+the request to skip filtering entirely.
 
 ### Combining with Authentication
 
@@ -188,12 +219,38 @@ end
 
 ## Thread Safety
 
-The filtering system is designed to be completely thread-safe:
+Filters are applied **in place**, against the request carried in the server's per-request
+context. Nothing is cloned and no shared state is mutated, so concurrent requests with different
+filters do not interfere.
 
-- Each request gets its own server instance
-- No shared state is modified
-- Original server configuration remains unchanged
-- Concurrent requests with different filters work correctly
+Earlier versions built a filtered copy of the server for each request. That looked safer but was
+not: registering the tools on a copy assigns `tool.server = self`, which is state on the tool
+*class*, so one request's copy silently repointed every other request's tools at it. Because
+request contexts are keyed by server identity, a concurrent tool reading
+`self.class.server.current_request_context` could get another request's context, or none.
+
+`create_filtered_copy` still exists for callers that genuinely want a separate `Server` instance,
+but it carries that caveat and is no longer used to serve requests. Avoid combining it with
+per-request contexts.
+
+## Custom Transports
+
+Filters are evaluated against the request in the server's per-request context, so a transport
+must supply one:
+
+```ruby
+server.with_request_context(transport: self, request: request) do
+  server.handle_request(body, headers: headers)
+end
+```
+
+`FastMcp::Transports::RackTransport` does this already. A custom transport that omits `request:`
+will find that **every filter silently becomes a no-op** — the catalogue is served unfiltered and
+nothing appears to be wrong. The server logs a warning once when it notices filters configured
+with no request in scope, but the warning is a safety net, not a substitute for passing it.
+
+A stdio transport has no request and legitimately cannot filter; configure filters only on
+transports that can supply one.
 
 ## Examples
 
