@@ -9,12 +9,17 @@ require_relative 'transports/rack_transport'
 require_relative 'transports/authenticated_rack_transport'
 require_relative 'logger'
 require_relative 'server_filtering'
+require_relative 'authentication'
 
 module FastMcp
-  class Server
+  class Server # rubocop:disable Metrics/ClassLength
     include ServerFiltering
 
-    attr_reader :name, :version, :tools, :resources, :capabilities
+    # Raised internally when a tool refuses a call via Tool#authorized?. Passed to a configured
+    # +error_formatter+ so it can distinguish a refusal from a genuine failure.
+    class UnauthorizedError < StandardError; end
+
+    attr_reader :name, :version, :tools, :resources, :prompts, :capabilities
 
     DEFAULT_CAPABILITIES = {
       resources: {
@@ -23,6 +28,9 @@ module FastMcp
       },
       tools: {
         listChanged: true
+      },
+      prompts: {
+        listChanged: false
       }
     }.freeze
 
@@ -31,6 +39,7 @@ module FastMcp
       @version = version
       @tools = {}
       @resources = []
+      @prompts = {}
       @resource_subscriptions = {}
       @logger = logger
       @request_id = 0
@@ -40,6 +49,7 @@ module FastMcp
       @tool_filters = []
       @resource_filters = []
       @on_error_result = nil
+      @error_formatter = nil
 
       # Merge with provided capabilities
       @capabilities.merge!(capabilities) if capabilities.is_a?(Hash)
@@ -59,6 +69,18 @@ module FastMcp
       @tools[tool.tool_name] = tool
       @logger.debug("Registered tool: #{tool.tool_name}")
       tool.server = self
+      notify_tool_list_changed if @transport
+      tool
+    end
+
+    # Removes a tool and notifies initialized clients.
+    #
+    # @param tool_name [String, Symbol] registered protocol name
+    # @return [Boolean] whether a tool was removed
+    def remove_tool(tool_name) # rubocop:disable Naming/PredicateMethod
+      removed = @tools.delete(tool_name.to_s)
+      notify_tool_list_changed if removed && @transport
+      !removed.nil?
     end
 
     # Register multiple resources at once
@@ -81,8 +103,62 @@ module FastMcp
       resource
     end
 
+    # Registers multiple prompt classes.
+    #
+    # @param prompts [Array<Class<FastMcp::Prompt>>]
+    # @return [Array<Class<FastMcp::Prompt>>]
+    def register_prompts(*prompts)
+      prompts.each { |prompt| register_prompt(prompt) }
+    end
+
+    # Registers one prompt class.
+    #
+    # @param prompt [Class<FastMcp::Prompt>]
+    # @return [Class<FastMcp::Prompt>]
+    def register_prompt(prompt)
+      @prompts[prompt.prompt_name] = prompt
+      prompt.server = self
+      @logger.debug("Registered prompt: #{prompt.prompt_name}")
+      prompt
+    end
+
+    # Removes one prompt. Prompt list-change notifications are intentionally
+    # unsupported while the prompts capability advertises listChanged: false.
+    #
+    # @param prompt_name [String, Symbol]
+    # @return [Boolean] whether a prompt was removed
+    def remove_prompt(prompt_name) # rubocop:disable Naming/PredicateMethod
+      !@prompts.delete(prompt_name.to_s).nil?
+    end
+
     def on_error_result(&block)
       @on_error_result = block
+    end
+
+    # Registers a formatter for the text payload of a failed tools/call.
+    #
+    # Agents recover far better from a machine-readable failure than from a prose string: a
+    # formatter can emit, say, a JSON envelope carrying a category, whether the call is worth
+    # retrying, and what to do instead. Without one, the historical "Error: <message>" text is
+    # used and behaviour is unchanged.
+    #
+    # Configuring a formatter also changes how an unauthorized call is reported: instead of a
+    # JSON-RPC -32602 response it becomes a tool error (`isError: true`), so a client handles one
+    # failure shape rather than two.
+    #
+    # @yieldparam message [String] human-readable failure description
+    # @yieldparam tool_name [String, nil] the tool that failed, when known
+    # @yieldparam error [Exception, nil] the underlying exception, when there was one
+    # @yieldreturn [String] text for the MCP content block
+    # @return [void]
+    #
+    # @example
+    #   server.error_formatter do |message:, tool_name:, error:|
+    #     JSON.generate(error: true, tool: tool_name, message: message,
+    #                   retriable: error.is_a?(Timeout::Error))
+    #   end
+    def error_formatter(&block)
+      @error_formatter = block
     end
 
     # Remove a resource from the server
@@ -139,7 +215,7 @@ module FastMcp
     end
 
     # Handle incoming JSON-RPC request
-    def handle_request(json_str, headers: {}) # rubocop:disable Metrics/MethodLength
+    def handle_request(json_str, headers: {}) # rubocop:disable Metrics/MethodLength, Metrics/CyclomaticComplexity
       begin
         request = JSON.parse(json_str)
       rescue JSON::ParserError, TypeError
@@ -166,6 +242,10 @@ module FastMcp
         handle_tools_list(id)
       when 'tools/call'
         handle_tools_call(params, headers, id)
+      when 'prompts/list'
+        handle_prompts_list(id)
+      when 'prompts/get'
+        handle_prompts_get(params, id)
       when 'resources/list'
         handle_resources_list(id)
       when 'resources/templates/list'
@@ -183,8 +263,12 @@ module FastMcp
         send_error(-32_601, "Method not found: #{method}", id)
       end
     rescue StandardError => e
-      @logger.error("Error handling request: #{e.message}, #{e.backtrace.join("\n")}")
-      send_error(-32_600, "Internal error: #{e.message}, #{e.backtrace.join("\n")}", id)
+      # Logged in full, sent without the backtrace: it discloses absolute paths and internal
+      # structure to whoever drives the client. This path is reachable from application code —
+      # a raising error_formatter, for one — so it has to be as careful as the tool rescue.
+      @logger.error("Error handling request: #{e.message}")
+      @logger.error(e.backtrace.join("\n")) if e.backtrace
+      send_error(-32_600, "Internal error: #{e.message}", id)
     end
 
     # Notify subscribers about a resource update
@@ -208,6 +292,34 @@ module FastMcp
 
     def read_resource(uri)
       @resources.find { |r| r.match(uri) }
+    end
+
+    # Runs server dispatch with request-scoped response routing.
+    #
+    # Nested contexts are restored in ensure, and contexts are isolated by
+    # server instance within the current thread.
+    #
+    # @param transport [#send_message] transport for responses in this request
+    # @param metadata [Hash] optional transport/session context
+    # @yieldreturn [Object] caller block result
+    # @return [Object] caller block result
+    def with_request_context(transport:, **metadata)
+      contexts = Thread.current[:fast_mcp_request_contexts] ||= {}.compare_by_identity
+      previous = contexts[self]
+      contexts[self] = metadata.merge(transport: transport)
+      yield
+    ensure
+      if contexts
+        previous ? contexts[self] = previous : contexts.delete(self)
+        Thread.current[:fast_mcp_request_contexts] = nil if contexts.empty?
+      end
+    end
+
+    # Returns the current request context for this server/thread.
+    #
+    # @return [Hash, nil]
+    def current_request_context
+      Thread.current[:fast_mcp_request_contexts]&.[](self)
     end
 
     private
@@ -283,6 +395,35 @@ module FastMcp
       nil
     end
 
+    # Handle prompts/list request.
+    def handle_prompts_list(id)
+      send_result({ prompts: @prompts.values.map(&:metadata) }, id)
+    end
+
+    # Handle prompts/get request.
+    def handle_prompts_get(params, id)
+      name = params['name']
+      return send_error(-32_602, 'Invalid params: missing prompt name', id) if name.nil? || name.empty?
+
+      prompt = @prompts[name]
+      return send_error(-32_602, "Prompt not found: #{name}", id) unless prompt
+
+      arguments = params['arguments'] || {}
+      missing = prompt.arguments.filter_map do |definition|
+        definition[:name] if definition[:required] && !arguments.key?(definition[:name])
+      end
+      if missing.any?
+        return send_error(
+          -32_602,
+          "Invalid params: missing required prompt arguments: #{missing.join(', ')}",
+          id
+        )
+      end
+
+      messages = prompt.new.messages(**symbolize_keys(arguments))
+      send_result({ description: prompt.description.to_s, messages: messages }, id)
+    end
+
     # Handle tools/list request
     def handle_tools_list(id)
       tools_list = @tools.values.map do |tool|
@@ -291,6 +432,8 @@ module FastMcp
           description: tool.description || '',
           inputSchema: tool.input_schema_to_json || { type: 'object', properties: {}, required: [] }
         }
+        output_schema = tool.output_schema_to_json
+        tool_info[:outputSchema] = output_schema if output_schema
 
         # Add annotations if they exist
         annotations = tool.annotations
@@ -327,30 +470,57 @@ module FastMcp
         tool_instance = tool.new(headers: headers)
         authorized = tool_instance.authorized?(**symbolized_args)
 
-        return send_error(-32_602, 'Unauthorized', id) unless authorized
+        return send_unauthorized_result(tool_name, id) unless authorized
 
         result, metadata = tool_instance.call_with_schema_validation!(**symbolized_args)
 
         # Format and send the result
-        send_formatted_result(result, id, metadata)
+        send_formatted_result(result, id, metadata, tool: tool)
       rescue FastMcp::Tool::InvalidArgumentsError => e
         @logger.error("Invalid arguments for tool #{tool_name}: #{e.message}")
-        send_error_result(e.message, id)
+        send_error_result(e.message, id, tool_name: tool_name, error: e)
       rescue StandardError => e
+        # The backtrace is logged, never sent: it discloses absolute paths and internal structure
+        # to whoever is driving the client.
         @logger.error("Error calling tool #{tool_name}: #{e.message}")
-        send_error_result("#{e.message}, #{e.backtrace.join("\n")}", id)
+        @logger.error(e.backtrace.join("\n")) if e.backtrace
+        send_error_result(e.message, id, tool_name: tool_name, error: e)
       end
     end
 
+    # Reports a refused tool call.
+    #
+    # Without an +error_formatter+ this keeps the historical JSON-RPC -32602 response. With one
+    # configured, the refusal is reported as a tool error instead, so a client sees the same
+    # shape for "not allowed" as for any other failure.
+    #
+    # @param tool_name [String]
+    # @param id [Integer, String]
+    # @return [void]
+    def send_unauthorized_result(tool_name, id)
+      @logger.error("Unauthorized tool call: #{tool_name}")
+      return send_error(-32_602, 'Unauthorized', id) unless @error_formatter
+
+      send_error_result('Unauthorized', id, tool_name: tool_name, error: UnauthorizedError.new('Unauthorized'))
+    end
+
     # Format and send successful result
-    def send_formatted_result(result, id, metadata)
+    def send_formatted_result(result, id, metadata, tool: nil)
       # Check if the result is already in the expected format
       if result.is_a?(Hash) && result.key?(:content)
         send_result(result, id, metadata: metadata)
+      elsif tool&.output_schema_to_json && result.is_a?(Hash)
+        structured_content = JSON.parse(JSON.generate(result))
+        formatted_result = {
+          content: [{ type: 'text', text: JSON.generate(structured_content) }],
+          structuredContent: structured_content,
+          isError: false
+        }
+        send_result(formatted_result, id, metadata: metadata)
       else
         # Format the result according to the MCP specification
         formatted_result = {
-          content: [{ type: 'text', text: result.to_s }],
+          content: [{ type: 'text', text: text_content_for(result) }],
           isError: false
         }
 
@@ -358,17 +528,58 @@ module FastMcp
       end
     end
 
+    # Renders a tool result as MCP text content.
+    #
+    # Hash and Array results are JSON-encoded. `to_s` would emit Ruby inspect syntax
+    # (`{name: "value"}`), which is not valid JSON and cannot be parsed by a client, so a tool
+    # returning structured data without declaring an `output_schema` used to be unusable.
+    #
+    # @param result [Object] value returned by the tool
+    # @return [String] text suitable for an MCP content block
+    def text_content_for(result)
+      case result
+      when String then result
+      when Hash, Array then JSON.generate(result)
+      else result.to_s
+      end
+    end
+
     # Format and send error result
-    def send_error_result(message, id)
+    #
+    # @param message [String] human-readable failure description
+    # @param id [Integer, String] JSON-RPC request id
+    # @param tool_name [String, nil] tool that failed, when known
+    # @param error [Exception, nil] the underlying exception, when there was one
+    # @return [void]
+    def send_error_result(message, id, tool_name: nil, error: nil)
       @on_error_result&.call(message)
 
       # Format error according to the MCP specification
       error_result = {
-        content: [{ type: 'text', text: "Error: #{message}" }],
+        content: [{ type: 'text', text: error_text_for(message, tool_name: tool_name, error: error) }],
         isError: true
       }
 
       send_result(error_result, id)
+    end
+
+    # Builds the text payload of a failed tools/call, delegating to +error_formatter+ when one is
+    # configured. Defaults to the historical "Error: <message>" string.
+    #
+    # A formatter is application code running on an error path, so a fault in it must not escalate
+    # into a second, worse failure: it is contained here and the safe default is used instead.
+    #
+    # @return [String]
+    def error_text_for(message, tool_name: nil, error: nil)
+      return "Error: #{message}" unless @error_formatter
+
+      begin
+        @error_formatter.call(message: message, tool_name: tool_name, error: error).to_s
+      rescue StandardError => e
+        @logger.error("error_formatter raised #{e.class}: #{e.message}; falling back to default text")
+        @logger.error(e.backtrace.join("\n")) if e.backtrace
+        "Error: #{message}"
+      end
     end
 
     # Handle resources/list request
@@ -440,6 +651,17 @@ module FastMcp
       @transport.send_message(notification)
     end
 
+    # Notify clients that tools/list should be refreshed.
+    def notify_tool_list_changed
+      return unless @client_initialized
+
+      @transport.send_message(
+        jsonrpc: '2.0',
+        method: 'notifications/tools/list_changed',
+        params: {}
+      )
+    end
+
     # Send a JSON-RPC result response
     def send_result(result, id, metadata: {})
       result[:_meta] = metadata if metadata.is_a?(Hash) && !metadata.empty?
@@ -470,9 +692,10 @@ module FastMcp
 
     # Send a JSON-RPC response
     def send_response(response)
-      if @transport
+      response_transport = current_request_context&.fetch(:transport, nil) || @transport
+      if response_transport
         @logger.debug("Sending response: #{response.inspect}")
-        @transport.send_message(response)
+        response_transport.send_message(response)
       else
         @logger.warn("No transport available to send response: #{response.inspect}")
         @logger.warn("Transport: #{@transport.inspect}, transport_klass: #{@transport_klass.inspect}")

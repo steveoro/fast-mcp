@@ -292,6 +292,39 @@ RSpec.describe FastMcp::Tool do
     end
   end
 
+  describe '.output_schema_to_json' do
+    it 'returns nil when no output schema is declared' do
+      expect(Class.new(described_class).output_schema_to_json).to be_nil
+    end
+
+    it 'supports a static JSON Schema declaration' do
+      test_class = Class.new(described_class) do
+        output_schema(
+          type: 'object',
+          properties: { answer: { type: 'string' } },
+          required: ['answer']
+        )
+      end
+
+      expect(test_class.output_schema_to_json).to include(
+        type: 'object',
+        required: ['answer']
+      )
+    end
+
+    it 'supports the Dry output DSL with descriptions' do
+      test_class = Class.new(described_class) do
+        output do
+          required(:answer).filled(:string).description('Structured answer')
+        end
+      end
+
+      schema = test_class.output_schema_to_json
+      expect(schema[:required]).to eq(['answer'])
+      expect(schema.dig(:properties, :answer, :description)).to eq('Structured answer')
+    end
+  end
+
   describe '#call_with_schema_validation!' do
     let(:test_class) do
       Class.new(described_class) do

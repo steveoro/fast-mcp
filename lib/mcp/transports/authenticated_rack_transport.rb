@@ -12,10 +12,14 @@ module FastMcp
         @auth_header_name = options[:auth_header_name] || 'Authorization'
         @auth_exempt_paths = options[:auth_exempt_paths] || []
         @auth_enabled = !@auth_token.nil?
+        # A browser preflight has to be told it may send whichever header carries the credential.
+        @cors_allowed_headers += [@auth_header_name]
       end
 
       def handle_mcp_request(request, env)
-        if auth_enabled? && !exempt_from_auth?(request.path)
+        # A browser never attaches credentials to a preflight, so requiring them here would make
+        # this transport unreachable from a browser. RackTransport answers the OPTIONS request.
+        if auth_enabled? && !request.options? && !exempt_from_auth?(request.path)
           auth_header = request.env["HTTP_#{@auth_header_name.upcase.gsub('-', '_')}"]
           token = auth_header&.gsub('Bearer ', '')
 

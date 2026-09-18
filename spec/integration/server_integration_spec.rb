@@ -55,13 +55,42 @@ RSpec.describe 'MCP Server Integration' do
     end
   end
 
+  let(:recall_prompt) do
+    Class.new(FastMcp::Prompt) do
+      prompt_name 'recall'
+      description 'Recall a topic'
+      argument :topic, required: true
+
+      def messages(topic:)
+        [{ role: 'user', content: { type: 'text', text: "Recall #{topic}" } }]
+      end
+    end
+  end
+
+  let(:structured_tool) do
+    Class.new(FastMcp::Tool) do
+      tool_name 'structured'
+      output_schema(
+        type: 'object',
+        properties: { value: { type: 'integer' } },
+        required: ['value']
+      )
+
+      def call
+        { value: 42 }
+      end
+    end
+  end
+
   before do
     # Register the test tool
     server.register_tool(greet_tool)
+    server.register_tool(structured_tool)
 
     # Register the test resources
     server.register_resource(counter_resource_class)
     server.register_resource(templated_resource_class)
+    server.register_prompt(recall_prompt)
 
     # Set the transport
     server.instance_variable_set(:@transport, transport)
@@ -98,6 +127,27 @@ RSpec.describe 'MCP Server Integration' do
       expect(io_as_json['id']).to eq(1)
     end
 
+    it 'lists and renders prompts over stdio transport' do
+      server.handle_request(
+        JSON.generate(jsonrpc: '2.0', method: 'prompts/list', id: 20)
+      )
+      listed = JSON.parse($stdout.string.lines.last)
+
+      expect(listed.dig('result', 'prompts', 0, 'name')).to eq('recall')
+
+      server.handle_request(
+        JSON.generate(
+          jsonrpc: '2.0',
+          method: 'prompts/get',
+          params: { name: 'recall', arguments: { topic: 'GraphMem' } },
+          id: 21
+        )
+      )
+      rendered = JSON.parse($stdout.string.lines.last)
+
+      expect(rendered.dig('result', 'messages', 0, 'content', 'text')).to eq('Recall GraphMem')
+    end
+
     it 'responds nil to notifications/initialized requests' do
       request = { jsonrpc: '2.0', method: 'notifications/initialized' }
       io_response = server.handle_request(JSON.generate(request))
@@ -113,8 +163,10 @@ RSpec.describe 'MCP Server Integration' do
       io_as_json = JSON.parse(io_response.read)
       expect(io_as_json['jsonrpc']).to eq('2.0')
       expect(io_as_json['result']['tools']).to be_an(Array)
-      expect(io_as_json['result']['tools'].length).to eq(1)
-      expect(io_as_json['result']['tools'][0]['name']).to eq('greet')
+      expect(io_as_json['result']['tools'].map { |tool| tool['name'] }).to contain_exactly(
+        'greet',
+        'structured'
+      )
       expect(io_as_json['id']).to eq(1)
     end
 
@@ -127,6 +179,21 @@ RSpec.describe 'MCP Server Integration' do
       expect(io_as_json['jsonrpc']).to eq('2.0')
       expect(io_as_json['result']['content'][0]['text']).to eq('Hello, World!')
       expect(io_as_json['id']).to eq(1)
+    end
+
+    it 'returns structured tool output with mirrored JSON text' do
+      request = {
+        jsonrpc: '2.0',
+        method: 'tools/call',
+        params: { name: 'structured', arguments: {} },
+        id: 22
+      }
+      response = server.handle_request(JSON.generate(request))
+
+      response.rewind
+      result = JSON.parse(response.read).fetch('result')
+      expect(result['structuredContent']).to eq('value' => 42)
+      expect(JSON.parse(result.dig('content', 0, 'text'))).to eq(result['structuredContent'])
     end
 
     it 'lists resources' do

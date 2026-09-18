@@ -5,6 +5,49 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0.pre.3] - 2026-09-18
+
+### Added
+
+- `Server#error_formatter` for machine-readable failure payloads on `tools/call`. When set,
+  refused calls are reported as tool errors (`isError: true`) instead of JSON-RPC `-32602`, so a
+  client handles one failure shape rather than two.
+- Pluggable transport authentication via an `authenticator:` option. An authenticator returns a
+  *principal* for an accepted request, which is placed in the per-request context and readable by
+  tools through `server.current_request_context[:principal]`. `FastMcp::Authentication` ships a
+  constant-time `TokenAuthenticator`, a CIDR-aware `IpAllowlist`, and a `Chain` to compose them.
+
+### Fixed
+
+- Results without an output schema are JSON-encoded when they are a Hash or Array. `to_s`
+  produced Ruby inspect syntax (`{name: "value"}`), which is not valid JSON and could not be
+  parsed by a client.
+- Exception backtraces are no longer sent to the client, on a failed `tools/call` or from the
+  outer request rescue; they are logged instead. They disclosed absolute paths and internal
+  structure.
+- A raising `error_formatter` no longer escalates into a JSON-RPC internal error. The fault is
+  logged and the default error text is used instead.
+- CORS preflight requests to an MCP path are answered before authentication, so an authenticated
+  transport stays reachable from a browser. Preflight responses now advertise `POST` and the
+  header carrying the credential, alongside `GET`, `OPTIONS` and `Content-Type`.
+
+## [1.7.0.pre.2] - 2026-09-17
+
+### Added
+
+- Opt-in output schemas with dual `structuredContent` and mirrored JSON text.
+- Ensure-safe request-scoped response routing for composite transports.
+- Public Rack filtered-server cache invalidation.
+
+## [1.7.0.pre.1] - 2026-09-17
+
+### Added
+
+- Native MCP prompt registration with `prompts/list` and `prompts/get`.
+- Prompt capability advertisement and prompt preservation on filtered servers.
+- Tool removal and `notifications/tools/list_changed` support.
+- RVM-isolated contributor setup and expanded server/stdio integration coverage.
+
 ## [1.6.0] - 2025-09-28
 
 ### Added

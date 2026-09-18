@@ -32,8 +32,17 @@ module FastMcp
 
       # Process an incoming message
       # This is a helper method that can be used by subclasses
-      def process_message(message, headers: {})
-        server.handle_request(message, headers: headers)
+      #
+      # @param message [String] the raw JSON-RPC payload
+      # @param headers [Hash] request headers made available to tools
+      # @param context [Hash] extra request-scoped values, such as +principal:+ from an
+      #   authenticator, readable by tools via +server.current_request_context+
+      def process_message(message, headers: {}, **context)
+        return server.handle_request(message, headers: headers) unless server.respond_to?(:with_request_context)
+
+        server.with_request_context(transport: self, **context) do
+          server.handle_request(message, headers: headers)
+        end
       end
     end
   end

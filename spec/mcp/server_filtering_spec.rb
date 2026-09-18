@@ -74,11 +74,33 @@ RSpec.describe 'FastMcp::Server filtering' do
       end
     end
   end
+
+  let(:orient_prompt) do
+    Class.new(FastMcp::Prompt) do
+      prompt_name 'orient'
+      description 'Orient the session'
+
+      def messages
+        [{ role: 'user', content: { type: 'text', text: 'Orient' } }]
+      end
+    end
+  end
   
   before do
     # Register all tools and resources
     server.register_tools(admin_tool, user_tool, public_tool)
     server.register_resources(admin_resource, user_resource)
+    server.register_prompt(orient_prompt)
+  end
+
+  describe 'prompt preservation' do
+    it 'copies prompts to request-filtered servers' do
+      server.filter_tools { |_request, tools| tools.first(1) }
+
+      filtered = server.create_filtered_copy(double('request'))
+
+      expect(filtered.prompts).to eq('orient' => orient_prompt)
+    end
   end
   
   describe '#filter_tools' do

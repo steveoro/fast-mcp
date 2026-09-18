@@ -15,14 +15,17 @@ module FastMcp
       DEFAULT_ALLOWED_IPS = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].freeze
       SERVER_ENV_KEY = 'fast_mcp.server'
 
+      # Request headers a browser is allowed to send to an MCP endpoint.
+      DEFAULT_CORS_ALLOWED_HEADERS = %w[Content-Type Authorization].freeze
+
       SSE_HEADERS = {
         'Content-Type' => 'text/event-stream',
         'Cache-Control' => 'no-cache, no-store, must-revalidate',
         'Connection' => 'keep-alive',
         'X-Accel-Buffering' => 'no', # For Nginx
         'Access-Control-Allow-Origin' => '*', # Allow CORS
-        'Access-Control-Allow-Methods' => 'GET, OPTIONS',
-        'Access-Control-Allow-Headers' => 'Content-Type',
+        'Access-Control-Allow-Methods' => 'GET, POST, OPTIONS',
+        'Access-Control-Allow-Headers' => 'Content-Type, Authorization',
         'Access-Control-Max-Age' => '86400', # 24 hours
         'Keep-Alive' => 'timeout=600', # 10 minutes timeout
         'Pragma' => 'no-cache',
@@ -41,6 +44,8 @@ module FastMcp
         @allowed_origins = options[:allowed_origins] || DEFAULT_ALLOWED_ORIGINS
         @localhost_only = options.fetch(:localhost_only, true) # Default to localhost-only mode
         @allowed_ips = options[:allowed_ips] || DEFAULT_ALLOWED_IPS
+        @authenticator = options[:authenticator]
+        @cors_allowed_headers = Array(options[:cors_allowed_headers] || DEFAULT_CORS_ALLOWED_HEADERS)
         @sse_clients = Concurrent::Hash.new
         @sse_clients_mutex = Mutex.new
         @running = false
@@ -134,7 +139,41 @@ module FastMcp
         end
       end
 
+      # Clears request-filtered server copies after registration/config changes.
+      #
+      # @return [Integer] number of cached server copies removed
+      def clear_filtered_servers_cache
+        size = @filtered_servers_cache.size
+        @filtered_servers_cache.clear
+        size
+      end
+
       private
+
+      # Runs the configured authenticator, if any, and stores the resulting principal on the Rack
+      # env so it survives to wherever the request context is opened.
+      #
+      # @return [Object, nil] the principal, +true+ when no authenticator is configured, or nil
+      #   when the request should be refused
+      def resolve_principal(request, env)
+        return true unless @authenticator
+
+        principal = @authenticator.call(request)
+
+        if principal
+          env[FastMcp::Authentication::ENV_KEY] = principal
+        else
+          @logger.warn("Rejected unauthenticated MCP request from #{request.ip}")
+        end
+
+        principal
+      end
+
+      # Extra values to open the request context with, beyond the transport itself.
+      def request_context_for(request)
+        principal = request.env[FastMcp::Authentication::ENV_KEY]
+        principal.nil? ? {} : { principal: principal }
+      end
 
       def valid_client_ip?(request)
         client_ip = request.ip
@@ -208,6 +247,14 @@ module FastMcp
 
         # Validate Origin header to prevent DNS rebinding attacks
         return forbidden_response('Forbidden: Origin validation failed') unless validate_origin(request, env)
+
+        # Answer the CORS preflight before authenticating. A browser never attaches credentials to
+        # a preflight, so checking auth first would make an authenticated transport unreachable
+        # from a browser: the preflight would 401 and the real request would never be sent.
+        return [200, setup_cors_headers, []] if request.options?
+
+        # Authenticate, and remember who for the rest of the request
+        return unauthorized_response unless resolve_principal(request, env)
 
         # Get the appropriate server for this request
         request_server = get_server_for_request(request, env)
@@ -307,11 +354,20 @@ module FastMcp
       def setup_cors_headers
         {
           'Access-Control-Allow-Origin' => '*',
-          'Access-Control-Allow-Methods' => 'GET, OPTIONS',
-          'Access-Control-Allow-Headers' => 'Content-Type',
+          'Access-Control-Allow-Methods' => 'GET, POST, OPTIONS',
+          'Access-Control-Allow-Headers' => cors_allowed_headers.join(', '),
           'Access-Control-Max-Age' => '86400', # 24 hours
           'Content-Type' => 'text/plain'
         }
+      end
+
+      # Headers a browser may send on an MCP request. Authorization is included by default
+      # because that is where a bearer credential goes; a transport reading the credential from
+      # somewhere else adds its own (see AuthenticatedRackTransport).
+      #
+      # @return [Array<String>]
+      def cors_allowed_headers
+        @cors_allowed_headers.uniq
       end
 
       # Extract client ID from request or generate a new one
@@ -545,7 +601,15 @@ module FastMcp
                          .transform_keys { |k| k.sub('HTTP_', '').downcase.tr('_', '-') }
 
         # Let the specific server handle the JSON request directly
-        response = server.handle_request(body, headers: headers) || []
+        response =
+          if server.respond_to?(:with_request_context)
+            server.with_request_context(transport: self, **request_context_for(request)) do
+              server.handle_request(body, headers: headers)
+            end
+          else
+            server.handle_request(body, headers: headers)
+          end
+        response ||= []
 
         # Return the JSON response
         [200, { 'Content-Type' => 'application/json' }, response]
@@ -554,6 +618,11 @@ module FastMcp
       # Return a method not allowed error response
       def method_not_allowed_response
         json_rpc_error_response(405, -32_601, 'Method not allowed')
+      end
+
+      # Return an unauthorized error response
+      def unauthorized_response
+        json_rpc_error_response(401, -32_000, 'Unauthorized: Invalid or missing credentials')
       end
 
       # Handle JSON parse errors

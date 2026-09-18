@@ -124,6 +124,8 @@ RSpec.describe 'FastMcp::Transports::RackTransport with filtering' do
       
       # Cache should have one entry
       expect(cache.size).to eq(1)
+      expect(transport.clear_filtered_servers_cache).to eq(1)
+      expect(cache).to be_empty
     end
   end
 end 

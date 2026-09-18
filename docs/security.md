@@ -6,6 +6,7 @@ Security is a critical aspect of any application that exposes functionality thro
 
 - [DNS Rebinding Protection](#dns-rebinding-protection)
 - [Authentication](#authentication)
+  - [Pluggable Authenticators](#pluggable-authenticators)
 - [HTTPS and SSL](#https-and-ssl)
 - [Best Practices](#best-practices)
 
@@ -102,6 +103,56 @@ FastMcp.authenticated_rack_middleware(app,
   # other options...
 )
 ```
+
+### Pluggable Authenticators
+
+`authenticated_rack_middleware` compares against one static token. When you need
+something else — a per-user credential looked up in a database, an allowlist of
+CIDR ranges, or both — pass an `authenticator:` to the transport instead.
+
+An authenticator is anything responding to `#call(request)`, where `request` is
+a `Rack::Request`. It returns a **principal** (any truthy object) to accept the
+request, or `nil`/`false` to refuse it with a 401.
+
+```ruby
+FastMcp.rack_middleware(app,
+  authenticator: FastMcp::Authentication::Chain.new(
+    FastMcp::Authentication::IpAllowlist.new(%w[127.0.0.0/8 10.0.0.0/8]),
+    FastMcp::Authentication::TokenAuthenticator.new(token: ENV.fetch('MCP_TOKEN'))
+  )
+)
+```
+
+`TokenAuthenticator` compares in constant time, so a wrong token cannot be
+discovered a byte at a time. `IpAllowlist` accepts CIDR ranges, unlike the
+transport's `allowed_ips` option which compares addresses exactly, and treats
+IPv4-mapped IPv6 addresses as IPv4. `Chain` refuses as soon as any link refuses.
+
+The principal is deliberately opaque, which is what lets one hook serve very
+different applications. A single-owner server can return a constant; an
+application with real users returns the user the credential belongs to:
+
+```ruby
+class CredentialAuthenticator
+  def call(request)
+    token = request.get_header('HTTP_AUTHORIZATION').to_s.sub(/\ABearer\s+/i, '')
+    ApiCredential.active.find_by(token_digest: Digest::SHA256.hexdigest(token))&.user
+  end
+end
+```
+
+Whatever it returns is placed in the server's per-request context, so a tool can
+read it:
+
+```ruby
+def call
+  user = self.class.server.current_request_context[:principal]
+  # ...
+end
+```
+
+The context is isolated per server instance per thread, so concurrent requests
+never see each other's principal.
 
 ## Best Practices
 
