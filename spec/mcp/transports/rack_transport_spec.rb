@@ -334,6 +334,70 @@ RSpec.describe FastMcp::Transports::RackTransport do
       end
     end
 
+    context 'with IP policy options' do
+      def message_env(ip)
+        {
+          'PATH_INFO' => '/mcp/messages',
+          'REQUEST_METHOD' => 'POST',
+          'HTTP_ORIGIN' => 'http://localhost',
+          'REMOTE_ADDR' => ip,
+          'rack.input' => StringIO.new('{"jsonrpc":"2.0","method":"ping","id":1}')
+        }
+      end
+
+      it 'enforces loopback defaults when localhost_only is true and no list is supplied' do
+        local_transport = described_class.new(app, server, logger: logger, localhost_only: true)
+
+        expect(local_transport.call(message_env('203.0.113.7')).first).to eq(403)
+        expect(local_transport.call(message_env('127.0.0.1')).first).to eq(200)
+      end
+
+      it 'allows remote clients when localhost_only is false and no list is supplied' do
+        open_transport = described_class.new(
+          app,
+          server,
+          logger: logger,
+          localhost_only: false
+        )
+
+        expect(open_transport.call(message_env('203.0.113.7')).first).to eq(200)
+      end
+
+      it 'enforces an explicit list even when localhost_only is false' do
+        restricted_transport = described_class.new(
+          app,
+          server,
+          logger: logger,
+          localhost_only: false,
+          allowed_ips: ['127.0.0.1']
+        )
+
+        expect(restricted_transport.call(message_env('203.0.113.7')).first).to eq(403)
+      end
+
+      it 'accepts CIDR ranges and IPv4-mapped IPv6 addresses' do
+        restricted_transport = described_class.new(
+          app,
+          server,
+          logger: logger,
+          localhost_only: false,
+          allowed_ips: ['192.168.0.0/16']
+        )
+
+        expect(restricted_transport.call(message_env('192.168.1.25')).first).to eq(200)
+        expect(restricted_transport.call(message_env('::ffff:192.168.1.25')).first).to eq(200)
+      end
+
+      it 'rejects an explicitly empty or entirely invalid list' do
+        expect {
+          described_class.new(app, server, localhost_only: false, allowed_ips: [])
+        }.to raise_error(ArgumentError, /valid range/)
+        expect {
+          described_class.new(app, server, localhost_only: false, allowed_ips: ['not-an-ip'])
+        }.to raise_error(ArgumentError, /valid range/)
+      end
+    end
+
     it 'returns 404 for unknown MCP endpoints' do
       env = { 'PATH_INFO' => '/mcp/invalid-endpoint', 'REMOTE_ADDR' => '127.0.0.1' }
 

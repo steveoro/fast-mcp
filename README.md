@@ -6,8 +6,8 @@
 </div>
 
 <p align="center">
-  <a href="https://badge.fury.io/rb/fast-mcp"><img src="https://badge.fury.io/rb/fast-mcp.svg" alt="Gem Version" /></a>
-  <a href="https://github.com/yjacquin/fast-mcp/workflows/CI/badge.svg"><img src="https://github.com/yjacquin/fast-mcp/workflows/CI/badge.svg" alt="CI Status" /></a>
+  <a href="https://github.com/steveoro/fast-mcp/releases"><img src="https://img.shields.io/github/v/release/steveoro/fast-mcp" alt="GitHub Release" /></a>
+  <a href="https://github.com/steveoro/fast-mcp/actions/workflows/ci.yml"><img src="https://github.com/steveoro/fast-mcp/actions/workflows/ci.yml/badge.svg" alt="CI Status" /></a>
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT" /></a>
   <a href="code_of_conduct.md"><img src="https://img.shields.io/badge/Contributor%20Covenant-2.1-4baaaa.svg" alt="Contributor Covenant" /></a>
   <a href="https://discord.gg/9HHfAtY3HF"><img src = "https://dcbadge.limes.pink/api/server/https://discord.gg/9HHfAtY3HF?style=flat" alt="Discord invite link" /></a>
@@ -23,6 +23,19 @@ AI models are powerful, but they need to interact with your applications to be t
 - 🧠 Managing the state between AI interactions and your data
 
 Fast MCP solves all these problems by providing a clean, Ruby-focused implementation of the [Model Context Protocol](https://github.com/modelcontextprotocol), making AI integration a joy, not a chore.
+
+## Installation
+
+This maintained fork is distributed from GitHub rather than RubyGems:
+
+```ruby
+gem 'fast-mcp',
+    git: 'https://github.com/steveoro/fast-mcp.git',
+    tag: 'v1.7.0'
+```
+
+The gem name, `require 'fast_mcp'`, and the `FastMcp` module remain compatible
+with the original project.
 
 ## ✨ Features
 
@@ -150,10 +163,14 @@ server.filter_tools do |request, tools|
 end
 ```
 
+Filters are evaluated in place and enforced on tool calls and every resource
+discovery/read path. Set `server.filter_mode = :deny` for an actionable refusal
+instead of the default hidden/not-found behavior. See
+[Dynamic Filtering](docs/filtering.md).
+
 ### 🚂 Fast Ruby on Rails implementation
 
 ```shell
-bundle add fast-mcp
 bin/rails generate fast_mcp:install
 ```
 
@@ -171,9 +188,9 @@ FastMcp.mount_in_rails(
   sse_route: 'sse', # This is the default route for the SSE endpoint
   # Add allowed origins below, it defaults to Rails.application.config.hosts
   # allowed_origins: ['localhost', '127.0.0.1', 'example.com', /.*\.example\.com/],
-  # localhost_only: true, # Set to false to allow connections from other hosts
-  # whitelist specific ips to if you want to run on localhost and allow connections from other IPs
-  # allowed_ips: ['127.0.0.1', '::1']
+  # localhost_only: true, # Omit allowed_ips to enforce loopback defaults
+  # localhost_only: false, # Remote clients allowed when allowed_ips is omitted
+  # allowed_ips: ['127.0.0.1', '192.168.0.0/16'], # Explicit lists are always enforced
   # authenticate: true,       # Uncomment to enable authentication
   # auth_token: 'your-token' # Required if authenticate: true
 ) do |server|
@@ -379,6 +396,10 @@ Please refer to [configuring_mcp_clients](docs/configuring_mcp_clients.md)
 | ✅ **Framework Integration**                    | Rails, Sinatra, Hanami, and any Rack-compatible framework |
 | ✅ **Authentication**                           | Secure your AI endpoints with token authentication        |
 | ✅ **Schema Support**                           | Full JSON Schema for tool arguments with validation       |
+| ✅ **Structured Tool Output**                   | Output schemas, structured content, and JSON text fallback |
+| ✅ **Prompts**                                  | Register and render reusable argument-aware prompts       |
+| ✅ **Request Filtering**                        | Enforced in-place tool and resource visibility            |
+| ✅ **Machine-readable Errors**                  | Application-defined error envelopes without backtraces    |
 
 ## 🗺️ Use Cases
 
@@ -418,14 +439,18 @@ FastMcp.authenticated_rack_middleware(app,
 )
 ```
 
+For per-user credentials, CIDR allowlists, or composed authentication, pass an
+`authenticator:` to `FastMcp.rack_middleware`. See
+[Security](docs/security.md).
+
 ## 📖 Documentation
 
-- [🚀 Getting Started Guide](docs/getting_started.md)
 - [🧩 Integration Guide](docs/integration_guide.md)
 - [🛤️ Rails Integration](docs/rails_integration.md)
 - [🌐 Sinatra Integration](docs/sinatra_integration.md)
 - [📚 Resources](docs/resources.md)
 - [🛠️ Tools](docs/tools.md)
+- [💬 Prompts](docs/prompts.md)
 - [🔒 Security](docs/security.md)
 - [🎯 Dynamic Filtering](docs/filtering.md)
 

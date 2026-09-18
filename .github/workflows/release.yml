@@ -18,6 +18,9 @@ jobs:
     
     - name: Run tests
       run: bundle exec rspec
+
+    - name: Verify gemspec
+      run: ruby script/verify_gemspec.rb
     
     - name: Build gem
       run: gem build *.gemspec
@@ -30,6 +33,7 @@ jobs:
   
   publish:
     needs: build
+    if: ${{ vars.PUBLISH_TO_RUBYGEMS == 'true' }}
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v5
@@ -55,7 +59,7 @@ jobs:
         rm -f ~/.gem/credentials 
   
   github_release:
-    needs: publish
+    needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -86,4 +90,4 @@ jobs:
       with:
         files: '*.gem'
         body: ${{ steps.changelog.outputs.CHANGELOG_CONTENT }}
-        generate_release_notes: true 
+        generate_release_notes: false

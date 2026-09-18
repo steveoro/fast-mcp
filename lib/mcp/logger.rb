@@ -18,7 +18,7 @@ module FastMcp
       transport == :stdio
     end
 
-    def add(severity, message = nil, progname = nil, &block)
+    def add(severity, message = nil, progname = nil, &)
       return if stdio_transport? # we don't want to log to stdout if we're using the stdio transport
 
       # TODO: implement logging as the specification requires

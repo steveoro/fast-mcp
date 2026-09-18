@@ -1,5 +1,10 @@
 # Integrating MCP with Web Applications
 
+> **Legacy guide:** Some framework examples below predate Fast MCP 1.7. Prefer
+> the current [README](../README.md), [Rails guide](rails_integration.md), and
+> [`examples/rack_middleware.rb`](../examples/rack_middleware.rb) until this
+> guide is fully rewritten.
+
 This guide explains how to integrate the Model Context Protocol (MCP) with your web application using the Fast MCP library. The library supports both standalone operation and integration with existing web frameworks.
 
 ## Installation
@@ -7,7 +12,9 @@ This guide explains how to integrate the Model Context Protocol (MCP) with your 
 Add the Fast MCP gem to your application's Gemfile:
 
 ```ruby
-gem 'fast-mcp'
+gem 'fast-mcp',
+    git: 'https://github.com/steveoro/fast-mcp.git',
+    tag: 'v1.7.0'
 ```
 
 Then run:
@@ -277,4 +284,5 @@ For most applications, we recommend starting with the Rack middleware approach f
 
 - Check out the [examples directory](../examples) for more examples of using MCP.
 - Read the [Resources documentation](./resources.md) for more details on using MCP Resources.
-- Explore the [advanced configuration options](./advanced_configuration.md) for customizing MCP behavior.
+- Explore [filtering](./filtering.md), [security](./security.md), and
+  [tool configuration](./tools.md) for advanced behavior.

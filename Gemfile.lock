@@ -1,9 +1,9 @@
 PATH
   remote: .
   specs:
-    fast-mcp (1.7.0.pre.4)
+    fast-mcp (1.7.0)
       addressable (~> 2.8)
-      base64
+      base64 (>= 0.2, < 1.0)
       dry-schema (~> 1.14)
       json (~> 2.0)
       mime-types (~> 3.4)

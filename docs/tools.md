@@ -295,6 +295,9 @@ error, so a client only has to handle one failure shape. The exception passed as
 `error:` is `FastMcp::Server::UnauthorizedError` in that case, which lets a
 formatter tell a refusal apart from a genuine failure.
 
+`filter_mode: :deny` uses the same unauthorized path and formatter exception;
+`:hide` reports a filtered tool as unknown instead.
+
 Backtraces are never sent to the client; they are written to the server log.
 
 ## Calling Tools From Another Tool
@@ -306,7 +309,7 @@ class GreetTool < FastMcp::Tool
   description 'Greet one person'
 
   arguments do
-    required(:names).array(:string).description("Name of person to greet")
+    required(:name).filled(:string).description("Name of person to greet")
   end
 
   def call(name:)

@@ -48,7 +48,6 @@ FastMcp.mount_in_rails(
   ...
 end
 ```
-```
 
 The `allowed_origins` parameter accepts an array of strings and regular expressions:
 - Strings are matched exactly against the hostname in the Origin header
@@ -63,6 +62,30 @@ When a request arrives at the MCP endpoint, the RackTransport middleware:
 3. Parses the hostname from the header value
 4. Checks if the hostname matches any of the allowed origins
 5. Returns a 403 Forbidden response if the hostname is not allowed
+
+### Client IP Policy
+
+`localhost_only: true` with no `allowed_ips` option enforces Fast MCP's
+loopback defaults. Set `localhost_only: false` and omit `allowed_ips` to allow
+remote addresses, or provide an explicit list to enforce exact addresses and
+CIDR ranges regardless of `localhost_only`:
+
+```ruby
+FastMcp.rack_middleware(
+  app,
+  localhost_only: false,
+  allowed_ips: ['127.0.0.1', '10.0.0.0/8', '192.168.1.25']
+)
+```
+
+An explicitly empty or entirely invalid list is rejected at startup. IPv4
+addresses represented as IPv4-mapped IPv6 are normalized before comparison.
+
+`Rack::Request#ip` can derive its value from forwarding headers. Configure
+trusted proxies correctly before treating an IP allowlist as authoritative.
+For non-browser clients, `Origin` and `Referer` are commonly absent and origin
+validation falls back to the requested Host; use authentication and a real IP
+policy rather than Host validation alone.
 
 ## Authentication
 
@@ -79,6 +102,10 @@ FastMcp.authenticated_rack_middleware(app,
   # other options...
 )
 ```
+
+This legacy convenience transport is retained for compatibility. New
+deployments should prefer `TokenAuthenticator`, which performs a
+length-independent constant-time comparison.
 
 ### Custom Authentication Headers
 
@@ -124,9 +151,9 @@ FastMcp.rack_middleware(app,
 ```
 
 `TokenAuthenticator` compares in constant time, so a wrong token cannot be
-discovered a byte at a time. `IpAllowlist` accepts CIDR ranges, unlike the
-transport's `allowed_ips` option which compares addresses exactly, and treats
-IPv4-mapped IPv6 addresses as IPv4. `Chain` refuses as soon as any link refuses.
+discovered a byte at a time. `IpAllowlist` and the transport's `allowed_ips`
+option both accept CIDR ranges and normalize IPv4-mapped IPv6 addresses.
+`Chain` refuses as soon as any link refuses.
 
 The principal is deliberately opaque, which is what lets one hook serve very
 different applications. A single-owner server can return a constant; an
@@ -153,6 +180,17 @@ end
 
 The context is isolated per server instance per thread, so concurrent requests
 never see each other's principal.
+
+Browser CORS preflight requests are validated for client IP and Origin before
+authentication, but do not require credentials. Responses permit `Authorization`
+by default; pass `cors_allowed_headers:` when a pluggable authenticator reads a
+different browser header.
+
+## HTTPS and SSL
+
+Fast MCP does not terminate TLS. Put an HTTPS reverse proxy or trusted tunnel in
+front of any server exposed beyond a local machine, preserve the original Host
+and client IP safely, and configure the proxy as trusted by Rack or Rails.
 
 ## Best Practices
 

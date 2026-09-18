@@ -1,5 +1,10 @@
 # Integrating MCP with Sinatra Applications
 
+> **Legacy guide:** The examples below predate Fast MCP 1.7 and may use old
+> constructor or resource APIs. Prefer the current
+> [`examples/rack_middleware.rb`](../examples/rack_middleware.rb) Rack pattern
+> until this guide is rewritten.
+
 This guide explains how to integrate the Model Context Protocol (MCP) with your Sinatra application using the Fast MCP library.
 
 ## Installation
@@ -7,7 +12,9 @@ This guide explains how to integrate the Model Context Protocol (MCP) with your 
 Add the Fast MCP gem to your application's Gemfile:
 
 ```ruby
-gem 'fast-mcp'
+gem 'fast-mcp',
+    git: 'https://github.com/steveoro/fast-mcp.git',
+    tag: 'v1.7.0'
 ```
 
 Then run:

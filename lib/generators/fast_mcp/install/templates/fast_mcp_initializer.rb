@@ -23,11 +23,12 @@ FastMcp.mount_in_rails(
   sse_route: 'sse', # This is the default route for the SSE endpoint
   # Add allowed origins below, it defaults to Rails.application.config.hosts
   # allowed_origins: ['localhost', '127.0.0.1', '[::1]', 'example.com', /.*\.example\.com/],
-  # localhost_only: true, # Set to false to allow connections from other hosts
-  # whitelist specific ips to if you want to run on localhost and allow connections from other IPs
-  # allowed_ips: ['127.0.0.1', '::1'],
+  # localhost_only: true, # Omit allowed_ips to enforce loopback defaults
+  # localhost_only: false, # Remote clients allowed when allowed_ips is omitted
+  # allowed_ips: ['127.0.0.1', '192.168.0.0/16'], # Explicit lists are always enforced
   # authenticate: true,       # Uncomment to enable authentication
   # auth_token: 'your-token', # Required if authenticate: true
+  # authenticator: MyCredentialAuthenticator.new, # Alternative per-request principal
 ) do |server|
   Rails.application.config.after_initialize do
     # FastMcp will automatically discover and register:

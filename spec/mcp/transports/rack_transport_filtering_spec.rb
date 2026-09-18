@@ -58,9 +58,9 @@ RSpec.describe 'FastMcp::Transports::RackTransport with filtering' do
           'rack.input' => StringIO.new('{"jsonrpc":"2.0","method":"ping","id":1}')
         }
 
-        expect(server).not_to receive(:create_filtered_copy)
-
         transport.call(env)
+
+        expect(admin_tool.server).to equal(server)
       end
 
       it 'still applies the filter to tools/list' do
@@ -97,9 +97,8 @@ RSpec.describe 'FastMcp::Transports::RackTransport with filtering' do
           FastMcp::Transports::RackTransport::SERVER_ENV_KEY => custom_server
         }
         
-        # Should use the custom server, not create a filtered copy
-        expect(server).not_to receive(:create_filtered_copy)
-        
+        expect(custom_server).to receive(:handle_request).and_call_original
+
         transport.call(env)
       end
     end
@@ -113,33 +112,11 @@ RSpec.describe 'FastMcp::Transports::RackTransport with filtering' do
         role == 'admin' ? tools : tools.reject { |t| t.tags.include?(:admin) }
       end
       
-      # Create a filtered copy manually to verify it works
       mock_request = double('request', params: { 'role' => 'user' })
-      filtered_server = server.create_filtered_copy(mock_request)
-      
-      # Check the filtered server has the right tools
-      expect(filtered_server.tools.keys).to eq(['user_tool'])
-      expect(filtered_server.tools.keys).not_to include('admin_tool')
-    end
-    
-    # There is nothing to cache any more: no per-request server copies are built, so the cache
-    # stays empty and its public invalidation method is a no-op kept for existing callers.
-    it 'caches nothing, because no server copies are created' do
-      server.filter_tools { |_request, tools| tools }
-      cache = transport.instance_variable_get(:@filtered_servers_cache)
+      visible = server.visible_tools(mock_request)
 
-      env = {
-        'PATH_INFO' => '/mcp/messages',
-        'REQUEST_METHOD' => 'POST',
-        'QUERY_STRING' => 'role=user',
-        'REMOTE_ADDR' => '127.0.0.1',
-        'rack.input' => StringIO.new('{"jsonrpc":"2.0","method":"ping","id":1}')
-      }
-
-      transport.call(env)
-
-      expect(cache).to be_empty
-      expect(transport.clear_filtered_servers_cache).to eq(0)
+      expect(visible.map(&:tool_name)).to eq(['user_tool'])
+      expect(server.tools.keys).to contain_exactly('admin_tool', 'user_tool')
     end
   end
 end 

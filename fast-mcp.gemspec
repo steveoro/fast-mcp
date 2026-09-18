@@ -14,10 +14,10 @@ Gem::Specification.new do |spec|
   spec.description = 'A flexible and powerful implementation of the MCP with multiple approaches for defining tools.'
   spec.homepage = 'https://github.com/steveoro/fast-mcp'
   spec.license = 'MIT'
-  spec.required_ruby_version = '>= 3.0.0'
+  spec.required_ruby_version = '>= 3.2.0'
 
   spec.metadata['homepage_uri'] = spec.homepage
-  spec.metadata['source_code_uri'] = spec.homepage
+  spec.metadata['source_code_uri'] = "#{spec.homepage}/tree/v#{spec.version}"
   spec.metadata['changelog_uri'] = "#{spec.homepage}/blob/main/CHANGELOG.md"
   spec.metadata['rubygems_mfa_required'] = 'true'
 
@@ -30,7 +30,7 @@ Gem::Specification.new do |spec|
 
   # Runtime dependencies
   spec.add_dependency 'addressable', '~> 2.8'
-  spec.add_dependency 'base64'
+  spec.add_dependency 'base64', '>= 0.2', '< 1.0'
   spec.add_dependency 'dry-schema', '~> 1.14'
   spec.add_dependency 'json', '~> 2.0'
   spec.add_dependency 'mime-types', '~> 3.4'
