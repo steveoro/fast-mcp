@@ -37,7 +37,7 @@ To set up your development environment:
 1. Fork the repository on GitHub
 2. Clone your fork locally:
    ```bash
-   git clone https://github.com/yjacquin/fast-mcp.git
+   git clone https://github.com/steveoro/fast-mcp.git
    cd fast-mcp
    ```
 3. Install dependencies:
@@ -163,12 +163,16 @@ bundle exec rubocop -a
 2. Update the CHANGELOG.md with the changes in the new version
 3. Create a release branch `release/vX.Y.Z`
 4. Create a pull request to merge the release branch into `main`
-5. After the pull request is merged, create a new release on GitHub
-6. Build and publish the gem to RubyGems
+5. After the pull request and CI matrix pass, push the `vX.Y.Z` tag
+6. Confirm the GitHub-only release workflow builds and attaches the gem
+
+This fork is not published to RubyGems. The workflow skips that job unless the
+repository variable `PUBLISH_TO_RUBYGEMS` is explicitly set to `true`, and
+`rake release` requires `ALLOW_RUBYGEMS_PUSH=1`.
 
 ## Community
 
-- Join the discussion on [GitHub Discussions](https://github.com/yjacquin/fast-mcp/discussions)
+- Join the discussion on [GitHub Discussions](https://github.com/steveoro/fast-mcp/discussions)
 - Follow the project on social media (if applicable)
 - Participate in community events and meetups
 

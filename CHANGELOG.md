@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] - 2026-09-18
+
+### Added
+
+- Native MCP prompts with registration, discovery, required arguments, and rendering.
+- Opt-in tool output schemas with dual `structuredContent` and mirrored JSON text.
+- Ensure-safe request context for response routing and opaque authenticated principals.
+- Pluggable constant-time token and CIDR authentication with composable chains.
+- Machine-readable tool error formatting without exposing application backtraces.
+- In-place tool/resource filtering, enforced across calls, catalogs, reads, and subscriptions.
+- `filter_mode` hide/deny behavior and truthful tool-list change notifications.
+
+### Changed
+
+- Hash and Array tool results without output schemas are encoded as JSON text.
+- Browser CORS preflight is handled before authentication while retaining IP and Origin checks.
+- Explicit `allowed_ips` lists now accept CIDRs and are enforced regardless of
+  `localhost_only`; non-local mounts remain unrestricted only when the option is omitted.
+- Ruby 3.2 is the minimum supported version.
+- Releases from this fork are GitHub-only unless RubyGems publication is explicitly enabled.
+
+### Removed
+
+- Unsafe prerelease `create_filtered_copy` server cloning and its private helpers.
+- Obsolete `RackTransport#clear_filtered_servers_cache` and filtered-server cache state.
+
 ## [1.7.0.pre.4] - 2026-09-18
 
 ### Added

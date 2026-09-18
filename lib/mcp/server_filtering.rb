@@ -21,9 +21,8 @@ module FastMcp
     # Tools this request is allowed to see, filtered in place.
     #
     # In place, rather than by cloning the server, because +register_tool+ assigns
-    # +tool.server = self+ — state on the tool *class*. A filtered copy therefore reassigns that
-    # pointer globally, and since request contexts are keyed by server identity, a tool would end
-    # up reading a different request's context, or none. See #create_filtered_copy.
+    # +tool.server = self+ — state on the tool *class*. A filtered copy would therefore reassign
+    # that pointer globally and break per-request context isolation.
     #
     # @param request [Rack::Request, nil] nil means no request scope, so nothing is filtered
     # @return [Array<Class>]
@@ -70,31 +69,6 @@ module FastMcp
       visible_tools(request).include?(tool)
     end
 
-    # Create a filtered copy for a specific request.
-    #
-    # @deprecated Unsafe to combine with per-request contexts: registering the tools on the copy
-    #   reassigns +tool.server+ for every other request too. Prefer #visible_tools, which the
-    #   server now uses to answer tools/list and tools/call. Retained for callers that relied on
-    #   receiving a separate Server instance.
-    def create_filtered_copy(request)
-      filtered_server = self.class.new(
-        name: @name,
-        version: @version,
-        logger: @logger,
-        capabilities: @capabilities
-      )
-
-      # Copy transport settings
-      filtered_server.transport_klass = @transport_klass
-
-      # Apply filters and register items
-      register_filtered_tools(filtered_server, request)
-      register_filtered_resources(filtered_server, request)
-      filtered_server.register_prompts(*@prompts.values)
-
-      filtered_server
-    end
-
     private
 
     # Filters need a request to filter against. A transport that never supplies one turns every
@@ -108,26 +82,6 @@ module FastMcp
         'Filters are configured but no request is in scope, so nothing is being filtered. ' \
         'Transports must pass `request:` to with_request_context; FastMcp::Transports::RackTransport does.'
       )
-    end
-
-    # Apply tool filters and register filtered tools
-    def register_filtered_tools(filtered_server, request)
-      filtered_tools = apply_tool_filters(request)
-
-      # Register filtered tools
-      filtered_tools.each do |tool|
-        filtered_server.register_tool(tool)
-      end
-    end
-
-    # Apply resource filters and register filtered resources
-    def register_filtered_resources(filtered_server, request)
-      filtered_resources = apply_resource_filters(request)
-
-      # Register filtered resources
-      filtered_resources.each do |resource|
-        filtered_server.register_resource(resource)
-      end
     end
 
     # Apply all tool filters to the tools collection

@@ -25,10 +25,12 @@ Fast MCP provides a powerful filtering system that allows you to dynamically con
 The filtering system works by:
 
 1. Defining filters on the server that examine request context
-2. Creating request-scoped server instances with filtered tools/resources
-3. Using these filtered servers to handle specific requests
+2. Carrying the Rack request in the server's per-request context
+3. Resolving visible tools/resources in place for each protocol operation
 
-This approach is completely thread-safe as each request gets its own server instance with the appropriate tools and resources.
+The registered server and tool-class bindings never change, so concurrent
+requests retain their own principal and visibility without cloning shared
+state.
 
 ## Basic Usage
 
@@ -183,6 +185,10 @@ unlisted:
 A filtered resource answers exactly as an unknown one does, so knowing or guessing a URI reveals
 nothing.
 
+Prompts are not filtered. Register only prompts that are appropriate for every
+client of the server, or enforce any prompt-specific policy in the prompt
+implementation.
+
 ### Filter Modes
 
 `Server#filter_mode` chooses how a refused tool call reads:
@@ -229,9 +235,8 @@ not: registering the tools on a copy assigns `tool.server = self`, which is stat
 request contexts are keyed by server identity, a concurrent tool reading
 `self.class.server.current_request_context` could get another request's context, or none.
 
-`create_filtered_copy` still exists for callers that genuinely want a separate `Server` instance,
-but it carries that caveat and is no longer used to serve requests. Avoid combining it with
-per-request contexts.
+The prerelease `create_filtered_copy` API was removed before 1.7.0 because it
+necessarily reassigned the class-level tool/server binding.
 
 ## Custom Transports
 
@@ -321,7 +326,7 @@ end
 
 1. **Keep Filters Fast**: Filters run on every request, so keep them efficient
 2. **Use Tags Wisely**: Create a consistent tagging system across your tools
-3. **Cache When Possible**: The built-in caching helps, but consider caching expensive checks
+3. **Keep Request Context Intact**: Custom HTTP transports must pass `request:` to `with_request_context`
 4. **Fail Secure**: When in doubt, exclude tools rather than include them
 5. **Log Filter Actions**: Consider logging when tools are filtered for debugging
 6. **Test Thoroughly**: Write tests for your filter logic to ensure security
@@ -344,4 +349,5 @@ server.filter_tools do |request, tools|
 end
 ```
 
-The filtering system handles all the complexity of creating request-scoped servers and ensuring thread safety. 
+The filtering system resolves visibility directly against the request context
+without creating or mutating server copies.

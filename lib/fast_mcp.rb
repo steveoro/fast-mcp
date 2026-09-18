@@ -39,6 +39,9 @@ module FastMcp
   # @option options [Logger] :logger The logger to use
   # @option options [Class] :transport The transport class to use
   # @option options [Array<String,Regexp>] :allowed_origins List of allowed origins for DNS rebinding protection
+  # @option options [Boolean] :localhost_only Restrict clients to loopback by default
+  # @option options [Array<String>] :allowed_ips Exact addresses or CIDR ranges to enforce
+  # @option options [#call] :authenticator Request authenticator returning a principal or nil
   # @yield [server] A block to configure the server
   # @yieldparam server [FastMcp::Server] The server to configure
   # @return [#call] The Rack middleware
@@ -66,6 +69,9 @@ module FastMcp
   # @option options [String] :version The version of the server
   # @option options [String] :auth_token The authentication token
   # @option options [Array<String,Regexp>] :allowed_origins List of allowed origins for DNS rebinding protection
+  # @option options [Boolean] :localhost_only Restrict clients to loopback by default
+  # @option options [Array<String>] :allowed_ips Exact addresses or CIDR ranges to enforce
+  # @option options [#call] :authenticator Request authenticator returning a principal or nil
   # @yield [server] A block to configure the server
   # @yieldparam server [FastMcp::Server] The server to configure
   # @return [#call] The Rack middleware
@@ -134,6 +140,9 @@ module FastMcp
   # @option options [Boolean] :authenticate Whether to use authentication
   # @option options [String] :auth_token The authentication token
   # @option options [Array<String,Regexp>] :allowed_origins List of allowed origins for DNS rebinding protection
+  # @option options [Boolean] :localhost_only Restrict clients to loopback by default
+  # @option options [Array<String>] :allowed_ips Exact addresses or CIDR ranges to enforce
+  # @option options [#call] :authenticator Request authenticator returning a principal or nil
   # @yield [server] A block to configure the server
   # @yieldparam server [FastMcp::Server] The server to configure
   # @return [#call] The Rack middleware
@@ -147,10 +156,8 @@ module FastMcp
     sse_route = options.delete(:sse_route) || 'sse'
     authenticate = options.delete(:authenticate) || false
     allowed_origins = options[:allowed_origins] || default_rails_allowed_origins(app)
-    allowed_ips = options[:allowed_ips] || FastMcp::Transports::RackTransport::DEFAULT_ALLOWED_IPS
 
     options[:localhost_only] = Rails.env.local? if options[:localhost_only].nil?
-    options[:allowed_ips] = allowed_ips
     options[:logger] = logger
     options[:allowed_origins] = allowed_origins
 

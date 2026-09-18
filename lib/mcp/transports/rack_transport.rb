@@ -4,6 +4,7 @@ require 'json'
 require 'securerandom'
 require 'rack'
 require_relative 'base_transport'
+require_relative '../authentication'
 
 module FastMcp
   module Transports
@@ -35,7 +36,7 @@ module FastMcp
       attr_reader :app, :path_prefix, :sse_clients, :messages_route, :sse_route, :allowed_origins, :localhost_only,
                   :allowed_ips
 
-      def initialize(app, server, options = {}, &_block)
+      def initialize(app, server, options = {})
         super(server, logger: options[:logger])
         @app = app
         @path_prefix = options[:path_prefix] || DEFAULT_PATH_PREFIX
@@ -43,13 +44,14 @@ module FastMcp
         @sse_route = options[:sse_route] || 'sse'
         @allowed_origins = options[:allowed_origins] || DEFAULT_ALLOWED_ORIGINS
         @localhost_only = options.fetch(:localhost_only, true) # Default to localhost-only mode
-        @allowed_ips = options[:allowed_ips] || DEFAULT_ALLOWED_IPS
+        @allowed_ips_explicit = options.key?(:allowed_ips)
+        @allowed_ips = resolved_allowed_ips(options)
+        @ip_allowlist = build_ip_allowlist(@allowed_ips)
         @authenticator = options[:authenticator]
         @cors_allowed_headers = Array(options[:cors_allowed_headers] || DEFAULT_CORS_ALLOWED_HEADERS)
         @sse_clients = Concurrent::Hash.new
         @sse_clients_mutex = Mutex.new
         @running = false
-        @filtered_servers_cache = {}
       end
 
       # Start the transport
@@ -139,17 +141,6 @@ module FastMcp
         end
       end
 
-      # Clears request-filtered server copies after registration/config changes.
-      #
-      # @deprecated Filters are applied in place now, so no copies are cached and this always
-      #   returns 0. Kept so existing callers keep working.
-      # @return [Integer] number of cached server copies removed
-      def clear_filtered_servers_cache
-        size = @filtered_servers_cache.size
-        @filtered_servers_cache.clear
-        size
-      end
-
       private
 
       # Runs the configured authenticator, if any, and stores the resulting principal on the Rack
@@ -183,15 +174,27 @@ module FastMcp
       end
 
       def valid_client_ip?(request)
-        client_ip = request.ip
+        return true unless @ip_allowlist
+        return true if @ip_allowlist.call(request)
 
-        # Check if we're in localhost-only mode
-        if @localhost_only && !@allowed_ips.include?(client_ip)
-          @logger.warn("Blocked connection from non-localhost IP: #{client_ip}")
-          return false
+        @logger.warn("Blocked connection from disallowed IP: #{request.ip}")
+        false
+      end
+
+      def resolved_allowed_ips(options)
+        if options.key?(:allowed_ips)
+          value = options[:allowed_ips]
+          return value.is_a?(Array) ? value : value.to_s.split(',')
         end
+        return DEFAULT_ALLOWED_IPS if @localhost_only
 
-        true
+        []
+      end
+
+      def build_ip_allowlist(ranges)
+        return if ranges.empty? && !@allowed_ips_explicit && !@localhost_only
+
+        FastMcp::Authentication::IpAllowlist.new(ranges)
       end
 
       # Validate the Origin header to prevent DNS rebinding attacks
