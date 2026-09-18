@@ -14,6 +14,10 @@ module FastMcp
   class Server # rubocop:disable Metrics/ClassLength
     include ServerFiltering
 
+    # Raised internally when a tool refuses a call via Tool#authorized?. Passed to a configured
+    # +error_formatter+ so it can distinguish a refusal from a genuine failure.
+    class UnauthorizedError < StandardError; end
+
     attr_reader :name, :version, :tools, :resources, :prompts, :capabilities
 
     DEFAULT_CAPABILITIES = {
@@ -44,6 +48,7 @@ module FastMcp
       @tool_filters = []
       @resource_filters = []
       @on_error_result = nil
+      @error_formatter = nil
 
       # Merge with provided capabilities
       @capabilities.merge!(capabilities) if capabilities.is_a?(Hash)
@@ -127,6 +132,32 @@ module FastMcp
 
     def on_error_result(&block)
       @on_error_result = block
+    end
+
+    # Registers a formatter for the text payload of a failed tools/call.
+    #
+    # Agents recover far better from a machine-readable failure than from a prose string: a
+    # formatter can emit, say, a JSON envelope carrying a category, whether the call is worth
+    # retrying, and what to do instead. Without one, the historical "Error: <message>" text is
+    # used and behaviour is unchanged.
+    #
+    # Configuring a formatter also changes how an unauthorized call is reported: instead of a
+    # JSON-RPC -32602 response it becomes a tool error (`isError: true`), so a client handles one
+    # failure shape rather than two.
+    #
+    # @yieldparam message [String] human-readable failure description
+    # @yieldparam tool_name [String, nil] the tool that failed, when known
+    # @yieldparam error [Exception, nil] the underlying exception, when there was one
+    # @yieldreturn [String] text for the MCP content block
+    # @return [void]
+    #
+    # @example
+    #   server.error_formatter do |message:, tool_name:, error:|
+    #     JSON.generate(error: true, tool: tool_name, message: message,
+    #                   retriable: error.is_a?(Timeout::Error))
+    #   end
+    def error_formatter(&block)
+      @error_formatter = block
     end
 
     # Remove a resource from the server
@@ -434,7 +465,7 @@ module FastMcp
         tool_instance = tool.new(headers: headers)
         authorized = tool_instance.authorized?(**symbolized_args)
 
-        return send_error(-32_602, 'Unauthorized', id) unless authorized
+        return send_unauthorized_result(tool_name, id) unless authorized
 
         result, metadata = tool_instance.call_with_schema_validation!(**symbolized_args)
 
@@ -442,11 +473,30 @@ module FastMcp
         send_formatted_result(result, id, metadata, tool: tool)
       rescue FastMcp::Tool::InvalidArgumentsError => e
         @logger.error("Invalid arguments for tool #{tool_name}: #{e.message}")
-        send_error_result(e.message, id)
+        send_error_result(e.message, id, tool_name: tool_name, error: e)
       rescue StandardError => e
+        # The backtrace is logged, never sent: it discloses absolute paths and internal structure
+        # to whoever is driving the client.
         @logger.error("Error calling tool #{tool_name}: #{e.message}")
-        send_error_result("#{e.message}, #{e.backtrace.join("\n")}", id)
+        @logger.error(e.backtrace.join("\n")) if e.backtrace
+        send_error_result(e.message, id, tool_name: tool_name, error: e)
       end
+    end
+
+    # Reports a refused tool call.
+    #
+    # Without an +error_formatter+ this keeps the historical JSON-RPC -32602 response. With one
+    # configured, the refusal is reported as a tool error instead, so a client sees the same
+    # shape for "not allowed" as for any other failure.
+    #
+    # @param tool_name [String]
+    # @param id [Integer, String]
+    # @return [void]
+    def send_unauthorized_result(tool_name, id)
+      @logger.error("Unauthorized tool call: #{tool_name}")
+      return send_error(-32_602, 'Unauthorized', id) unless @error_formatter
+
+      send_error_result('Unauthorized', id, tool_name: tool_name, error: UnauthorizedError.new('Unauthorized'))
     end
 
     # Format and send successful result
@@ -465,7 +515,7 @@ module FastMcp
       else
         # Format the result according to the MCP specification
         formatted_result = {
-          content: [{ type: 'text', text: result.to_s }],
+          content: [{ type: 'text', text: text_content_for(result) }],
           isError: false
         }
 
@@ -473,17 +523,49 @@ module FastMcp
       end
     end
 
+    # Renders a tool result as MCP text content.
+    #
+    # Hash and Array results are JSON-encoded. `to_s` would emit Ruby inspect syntax
+    # (`{name: "value"}`), which is not valid JSON and cannot be parsed by a client, so a tool
+    # returning structured data without declaring an `output_schema` used to be unusable.
+    #
+    # @param result [Object] value returned by the tool
+    # @return [String] text suitable for an MCP content block
+    def text_content_for(result)
+      case result
+      when String then result
+      when Hash, Array then JSON.generate(result)
+      else result.to_s
+      end
+    end
+
     # Format and send error result
-    def send_error_result(message, id)
+    #
+    # @param message [String] human-readable failure description
+    # @param id [Integer, String] JSON-RPC request id
+    # @param tool_name [String, nil] tool that failed, when known
+    # @param error [Exception, nil] the underlying exception, when there was one
+    # @return [void]
+    def send_error_result(message, id, tool_name: nil, error: nil)
       @on_error_result&.call(message)
 
       # Format error according to the MCP specification
       error_result = {
-        content: [{ type: 'text', text: "Error: #{message}" }],
+        content: [{ type: 'text', text: error_text_for(message, tool_name: tool_name, error: error) }],
         isError: true
       }
 
       send_result(error_result, id)
+    end
+
+    # Builds the text payload of a failed tools/call, delegating to +error_formatter+ when one is
+    # configured. Defaults to the historical "Error: <message>" string.
+    #
+    # @return [String]
+    def error_text_for(message, tool_name: nil, error: nil)
+      return "Error: #{message}" unless @error_formatter
+
+      @error_formatter.call(message: message, tool_name: tool_name, error: error).to_s
     end
 
     # Handle resources/list request

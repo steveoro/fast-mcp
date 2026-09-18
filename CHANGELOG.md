@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `Server#error_formatter` for machine-readable failure payloads on `tools/call`. When set,
+  refused calls are reported as tool errors (`isError: true`) instead of JSON-RPC `-32602`, so a
+  client handles one failure shape rather than two.
+
+### Fixed
+
+- Results without an output schema are JSON-encoded when they are a Hash or Array. `to_s`
+  produced Ruby inspect syntax (`{name: "value"}`), which is not valid JSON and could not be
+  parsed by a client.
+- Exception backtraces are no longer sent to the client on a failed `tools/call`; they are
+  logged instead. They disclosed absolute paths and internal structure.
+
 ## [1.7.0.pre.2] - 2026-09-17
 
 ### Added

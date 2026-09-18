@@ -526,8 +526,8 @@ RSpec.describe FastMcp::Server do
         allow_any_instance_of(test_tool_class).to receive(:call).and_raise('test error')
       }
 
-      it 'calls the on_error_result block' do
-        request = {
+      let(:error_request) do
+        {
           jsonrpc: '2.0',
           method: 'tools/call',
           params: {
@@ -536,9 +536,143 @@ RSpec.describe FastMcp::Server do
           },
           id: 1
         }.to_json
+      end
 
-        expect(on_error_result).to receive(:call).with(/^test error, /)
-        server.handle_request(request)
+      it 'calls the on_error_result block' do
+        expect(on_error_result).to receive(:call).with('test error')
+        server.handle_request(error_request)
+      end
+
+      # The backtrace used to be appended to the message and sent to the client, disclosing
+      # absolute paths and internal structure to whoever drives it. It is logged instead.
+      it 'does not disclose the backtrace to the client' do
+        allow(server).to receive(:send_result)
+
+        server.handle_request(error_request)
+
+        expect(server).to have_received(:send_result) do |result, _id|
+          text = result[:content].first[:text]
+          expect(text).to eq('Error: test error')
+          expect(text).not_to include('server.rb')
+          expect(text).not_to include(Dir.pwd)
+        end
+      end
+    end
+  end
+
+  describe 'text content for results without an output schema' do
+    let(:transport) { instance_double('Transport', send_message: nil) }
+
+    def call_tool_returning(value)
+      tool = Class.new(FastMcp::Tool) do
+        def self.name = 'structured-tool'
+        description 'Returns a value without declaring an output schema'
+        define_method(:call) { value }
+      end
+      server.register_tool(tool)
+      server.transport = transport
+
+      captured = nil
+      allow(server).to receive(:send_result) { |result, _id| captured = result }
+      server.handle_request(
+        { jsonrpc: '2.0', method: 'tools/call', params: { name: 'structured-tool', arguments: {} }, id: 1 }.to_json
+      )
+      captured[:content].first[:text]
+    end
+
+    # `to_s` on a Hash produces Ruby inspect syntax, which is not JSON and cannot be parsed by a
+    # client, so structured results were unusable without an output schema.
+    it 'JSON-encodes a Hash' do
+      expect(call_tool_returning({ name: 'value', count: 2 }))
+        .to eq('{"name":"value","count":2}')
+    end
+
+    it 'JSON-encodes an Array' do
+      expect(call_tool_returning([1, 'two'])).to eq('[1,"two"]')
+    end
+
+    it 'leaves a String untouched' do
+      expect(call_tool_returning('plain text')).to eq('plain text')
+    end
+
+    it 'falls back to to_s for anything else' do
+      expect(call_tool_returning(42)).to eq('42')
+    end
+  end
+
+  describe '#error_formatter' do
+    let(:transport) { instance_double('Transport', send_message: nil) }
+    let(:failing_tool) do
+      Class.new(FastMcp::Tool) do
+        def self.name = 'failing-tool'
+        description 'Always fails'
+        def call = raise(ArgumentError, 'bad input')
+      end
+    end
+    let(:forbidden_tool) do
+      Class.new(FastMcp::Tool) do
+        def self.name = 'forbidden-tool'
+        description 'Never authorized'
+        authorize { false }
+        def call = 'unreachable'
+      end
+    end
+
+    def call_tool(name)
+      server.transport = transport
+      captured = { result: nil, error: nil }
+      allow(server).to receive(:send_result) { |result, _id| captured[:result] = result }
+      allow(server).to receive(:send_error) { |code, message, _id| captured[:error] = [code, message] }
+      server.handle_request(
+        { jsonrpc: '2.0', method: 'tools/call', params: { name: name, arguments: {} }, id: 1 }.to_json
+      )
+      captured
+    end
+
+    context 'when no formatter is configured' do
+      it 'keeps the historical error text' do
+        server.register_tool(failing_tool)
+
+        expect(call_tool('failing-tool')[:result][:content].first[:text]).to eq('Error: bad input')
+      end
+
+      it 'keeps reporting an unauthorized call as JSON-RPC -32602' do
+        server.register_tool(forbidden_tool)
+
+        expect(call_tool('forbidden-tool')[:error]).to eq([-32_602, 'Unauthorized'])
+      end
+    end
+
+    context 'when a formatter is configured' do
+      before do
+        server.error_formatter do |message:, tool_name:, error:|
+          JSON.generate(tool: tool_name, message: message, klass: error&.class&.name)
+        end
+      end
+
+      it 'uses it for the failure text' do
+        server.register_tool(failing_tool)
+
+        payload = JSON.parse(call_tool('failing-tool')[:result][:content].first[:text])
+        expect(payload).to eq(
+          'tool' => 'failing-tool', 'message' => 'bad input', 'klass' => 'ArgumentError'
+        )
+      end
+
+      # One failure shape is easier for a client to handle than two.
+      it 'reports an unauthorized call as a tool error rather than a JSON-RPC error' do
+        server.register_tool(forbidden_tool)
+        captured = call_tool('forbidden-tool')
+
+        expect(captured[:error]).to be_nil
+        expect(captured[:result][:isError]).to be(true)
+
+        payload = JSON.parse(captured[:result][:content].first[:text])
+        expect(payload).to include(
+          'tool' => 'forbidden-tool',
+          'message' => 'Unauthorized',
+          'klass' => 'FastMcp::Server::UnauthorizedError'
+        )
       end
     end
   end

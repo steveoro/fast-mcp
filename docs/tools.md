@@ -12,6 +12,7 @@ Tools are a core concept in the Model Context Protocol (MCP). They allow you to 
   - [Argument Validation](#argument-validation)
   - [Default Values](#default-values)
 - [Output Schemas and Structured Content](#output-schemas-and-structured-content)
+- [Error Formatting](#error-formatting)
 - [Calling Tools From Another Tool](#calling-tools-from-another-tool)
 - [Advanced Tool Features](#advanced-tool-features)
   - [Tool Annotations](#tool-annotations)
@@ -261,9 +262,40 @@ end
 Use `output { required(:status).filled(:string) }` when the Dry DSL is more
 convenient. `tools/list` advertises the declaration as `outputSchema`.
 Schema-enabled Hash results include both `structuredContent` and a JSON text
-content block for backward compatibility. Tools without an output schema keep
-their existing formatting, and custom `{ content: [...] }` results remain an
-escape hatch for images or multiple content blocks.
+content block for backward compatibility. Custom `{ content: [...] }` results
+remain an escape hatch for images or multiple content blocks.
+
+Tools without an output schema still get a single text content block. Hash and
+Array results are JSON-encoded there, so they stay parseable by a client;
+anything else falls back to `to_s`.
+
+## Error Formatting
+
+By default a failed `tools/call` returns the text `Error: <message>`, and a call
+refused by `authorized?` returns a JSON-RPC `-32602` response.
+
+Prose is hard for an agent to act on, so a server can install a formatter that
+returns a machine-readable payload instead:
+
+```ruby
+server.error_formatter do |message:, tool_name:, error:|
+  JSON.generate(
+    error: true,
+    tool: tool_name,
+    message: message,
+    retriable: error.is_a?(Timeout::Error),
+    next_move: error.is_a?(Timeout::Error) ? 'Retry once, then tell the user.' : 'Do not retry.'
+  )
+end
+```
+
+Installing a formatter also changes how a refused call is reported: it becomes a
+tool error (`isError: true`) carrying the same payload, rather than a JSON-RPC
+error, so a client only has to handle one failure shape. The exception passed as
+`error:` is `FastMcp::Server::UnauthorizedError` in that case, which lets a
+formatter tell a refusal apart from a genuine failure.
+
+Backtraces are never sent to the client; they are written to the server log.
 
 ## Calling Tools From Another Tool
 Tools can call other tools:
