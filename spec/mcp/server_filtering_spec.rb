@@ -431,6 +431,132 @@ RSpec.describe 'FastMcp::Server filtering' do
     end
   end
 
+  # docs/filtering.md presents filtering as permission-based access control and multi-tenancy, so
+  # a filtered resource must be unreachable, not merely unlisted. Knowing or guessing a URI must
+  # not be enough to read it.
+  describe 'resource filtering across every request path' do
+    let(:request) { double('request', params: {}) }
+    let(:transport) { instance_double('Transport', send_message: nil) }
+
+    let(:secret_resource) do
+      Class.new(FastMcp::Resource) do
+        uri 'secret/data'
+        resource_name 'Secret'
+        description 'Filtered out'
+        def content = JSON.generate(secret: true)
+      end
+    end
+
+    let(:secret_template) do
+      Class.new(FastMcp::Resource) do
+        uri 'secret/{id}'
+        resource_name 'Secret template'
+        description 'Filtered out'
+        def content = JSON.generate(secret: true)
+      end
+    end
+
+    let(:open_resource) do
+      Class.new(FastMcp::Resource) do
+        uri 'open/data'
+        resource_name 'Open'
+        description 'Visible'
+        def content = JSON.generate(open: true)
+      end
+    end
+
+    before do
+      server.register_resources(secret_resource, secret_template, open_resource)
+      server.transport = transport
+      server.instance_variable_set(:@client_initialized, true)
+      server.filter_resources do |_req, resources|
+        resources.reject { |resource| resource.uri.start_with?('secret/') }
+      end
+    end
+
+    def dispatch(method_name, params = {})
+      captured = { result: nil, error: nil }
+      allow(server).to receive(:send_result) { |result, _id| captured[:result] = result }
+      allow(server).to receive(:send_error) { |code, message, _id| captured[:error] = [code, message] }
+
+      server.with_request_context(transport: transport, request: request) do
+        server.handle_request({ jsonrpc: '2.0', method: method_name, params: params, id: 1 }.to_json)
+      end
+
+      captured
+    end
+
+    it 'omits a filtered resource from resources/list' do
+      uris = dispatch('resources/list')[:result][:resources].map { |r| r[:uri] }
+
+      expect(uris).to include('open/data')
+      expect(uris).not_to include('secret/data')
+    end
+
+    it 'omits a filtered template from resources/templates/list' do
+      templates = dispatch('resources/templates/list')[:result][:resourceTemplates]
+
+      expect(templates.map { |t| t[:uri] }).not_to include('secret/{id}')
+    end
+
+    it 'refuses to read a filtered resource by its known URI' do
+      captured = dispatch('resources/read', { 'uri' => 'secret/data' })
+
+      expect(captured[:error]).to eq([-32_602, 'Resource not found: secret/data'])
+      expect(captured[:result]).to be_nil
+    end
+
+    it 'refuses to read through a filtered template' do
+      captured = dispatch('resources/read', { 'uri' => 'secret/42' })
+
+      expect(captured[:error]).to eq([-32_602, 'Resource not found: secret/42'])
+    end
+
+    it 'refuses to subscribe to a filtered resource' do
+      captured = dispatch('resources/subscribe', { 'uri' => 'secret/data' })
+
+      expect(captured[:error]).to eq([-32_602, 'Resource not found: secret/data'])
+    end
+
+    # Indistinguishable from a resource that genuinely does not exist, so the filter leaks nothing.
+    it 'answers identically for a filtered resource and an unknown one' do
+      filtered = dispatch('resources/read', { 'uri' => 'secret/data' })[:error]
+      unknown = dispatch('resources/read', { 'uri' => 'nope/at/all' })[:error]
+
+      expect(filtered.first).to eq(unknown.first)
+    end
+
+    it 'still serves a visible resource' do
+      captured = dispatch('resources/read', { 'uri' => 'open/data' })
+
+      expect(captured[:error]).to be_nil
+      expect(captured[:result][:contents].first[:text]).to include('open')
+    end
+  end
+
+  describe 'when filters are configured but no request is in scope' do
+    let(:logger) { instance_double(Logger, warn: nil, debug: nil, info: nil, error: nil) }
+    let(:server) { FastMcp::Server.new(name: 'test-server', version: '1.0.0', logger: logger) }
+
+    before do
+      server.register_tool(user_tool)
+      server.filter_tools { |_req, _tools| [] }
+    end
+
+    # Failing open is the dangerous direction: everything keeps working and looks filtered.
+    it 'warns, rather than silently serving the unfiltered catalogue' do
+      server.visible_tools(nil)
+
+      expect(logger).to have_received(:warn).with(/no request is in scope/)
+    end
+
+    it 'warns only once, so it cannot flood the log' do
+      3.times { server.visible_tools(nil) }
+
+      expect(logger).to have_received(:warn).once
+    end
+  end
+
   describe 'Thread safety' do
     it 'creates independent server instances for concurrent requests' do
       server.filter_tools do |req, tools|

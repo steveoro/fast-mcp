@@ -168,10 +168,24 @@ env['fast_mcp.server'] = custom_filtered_server
 
 This takes precedence over any configured filters.
 
+### What Filtering Covers
+
+Filters apply to every request path, so a filtered item is unreachable rather than merely
+unlisted:
+
+| Path | Behaviour when filtered out |
+|---|---|
+| `tools/list` | Absent |
+| `tools/call` | Refused — see [Filter Modes](#filter-modes) |
+| `resources/list`, `resources/templates/list` | Absent |
+| `resources/read`, `resources/subscribe` | Reported as not found |
+
+A filtered resource answers exactly as an unknown one does, so knowing or guessing a URI reveals
+nothing.
+
 ### Filter Modes
 
-Filtering applies to `tools/call` as well as `tools/list`, so a hidden tool cannot be invoked by
-name. `Server#filter_mode` chooses how that refusal reads:
+`Server#filter_mode` chooses how a refused tool call reads:
 
 ```ruby
 server.filter_mode = :deny # default is :hide
@@ -218,6 +232,25 @@ request contexts are keyed by server identity, a concurrent tool reading
 `create_filtered_copy` still exists for callers that genuinely want a separate `Server` instance,
 but it carries that caveat and is no longer used to serve requests. Avoid combining it with
 per-request contexts.
+
+## Custom Transports
+
+Filters are evaluated against the request in the server's per-request context, so a transport
+must supply one:
+
+```ruby
+server.with_request_context(transport: self, request: request) do
+  server.handle_request(body, headers: headers)
+end
+```
+
+`FastMcp::Transports::RackTransport` does this already. A custom transport that omits `request:`
+will find that **every filter silently becomes a no-op** — the catalogue is served unfiltered and
+nothing appears to be wrong. The server logs a warning once when it notices filters configured
+with no request in scope, but the warning is a safety net, not a substitute for passing it.
+
+A stdio transport has no request and legitimately cannot filter; configure filters only on
+transports that can supply one.
 
 ## Examples
 

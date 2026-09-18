@@ -385,7 +385,9 @@ module FastMcp
       @logger.debug("Looking for resource with URI: #{uri}")
 
       begin
-        resource = read_resource(uri)
+        # Filtered, so a resource this request cannot see is indistinguishable from one that does
+        # not exist — otherwise knowing a URI would be enough to bypass the filter.
+        resource = visible_resource(uri, current_request)
         return send_error(-32_602, "Resource not found: #{uri}", id) unless resource
 
         @logger.debug("Found resource: #{resource.resource_name}, templated: #{resource.templated?}")
@@ -626,7 +628,7 @@ module FastMcp
     # Handle resources/templates/list request
     def handle_resources_templates_list(id)
       # Collect templated resources
-      templated_resources_list = @resources.select(&:templated?).map(&:metadata)
+      templated_resources_list = visible_resources(current_request).select(&:templated?).map(&:metadata)
 
       send_result({ resourceTemplates: templated_resources_list }, id)
     end
@@ -642,7 +644,7 @@ module FastMcp
         return
       end
 
-      resource = @resources.find { |r| r.match(uri) }
+      resource = visible_resource(uri, current_request)
       return send_error(-32_602, "Resource not found: #{uri}", id) unless resource
 
       # Add to subscriptions

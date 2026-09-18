@@ -22,8 +22,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on the tool *class* — so one request's filtered copy silently repointed every other request's
   tools at it. Since request contexts are keyed by server identity, a concurrent tool call could
   read another request's context, or none at all.
-- Filtering now also applies to `tools/call` and `resources/list`, not just `tools/list`. A
-  filtered tool was previously still callable.
+- Filtering now applies to every request path, not just `tools/list`: `tools/call`,
+  `resources/list`, `resources/templates/list`, `resources/read` and `resources/subscribe`. A
+  filtered tool was previously still callable by name, and a filtered resource still readable by
+  URI, which made filtering unusable as the access control the documentation describes. A
+  filtered resource is reported as not found, indistinguishable from one that does not exist.
+- A server with filters configured but no request in scope logs a warning once, instead of
+  silently serving the unfiltered catalogue. Filters need a request to filter against, so a
+  transport that never supplies one turns every filter into a no-op that looks like it is working.
 - `create_filtered_copy` is deprecated but retained; the request path no longer uses it.
 - `RackTransport#clear_filtered_servers_cache` is deprecated and always returns 0: there are no
   server copies to cache. The private cache-key helpers have been removed.

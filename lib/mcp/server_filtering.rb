@@ -28,7 +28,11 @@ module FastMcp
     # @param request [Rack::Request, nil] nil means no request scope, so nothing is filtered
     # @return [Array<Class>]
     def visible_tools(request)
-      return @tools.values if request.nil? || @tool_filters.empty?
+      if request.nil?
+        warn_filters_inactive if @tool_filters.any?
+        return @tools.values
+      end
+      return @tools.values if @tool_filters.empty?
 
       apply_tool_filters(request)
     end
@@ -38,9 +42,25 @@ module FastMcp
     # @param request [Rack::Request, nil]
     # @return [Array]
     def visible_resources(request)
-      return @resources if request.nil? || @resource_filters.empty?
+      if request.nil?
+        warn_filters_inactive if @resource_filters.any?
+        return @resources
+      end
+      return @resources if @resource_filters.empty?
 
       apply_resource_filters(request)
+    end
+
+    # Resource matching the URI that this request is allowed to see.
+    #
+    # Used instead of #read_resource wherever a request is being served, so that a filtered-out
+    # resource cannot be reached by guessing or remembering its URI.
+    #
+    # @param uri [String]
+    # @param request [Rack::Request, nil]
+    # @return [Object, nil]
+    def visible_resource(uri, request)
+      visible_resources(request).find { |resource| resource.match(uri) }
     end
 
     # @param tool [Class]
@@ -76,6 +96,19 @@ module FastMcp
     end
 
     private
+
+    # Filters need a request to filter against. A transport that never supplies one turns every
+    # filter into a no-op, which fails open and looks like everything is working — so say so,
+    # once, rather than silently serving the unfiltered catalogue.
+    def warn_filters_inactive
+      return if @warned_filters_inactive
+
+      @warned_filters_inactive = true
+      logger&.warn(
+        'Filters are configured but no request is in scope, so nothing is being filtered. ' \
+        'Transports must pass `request:` to with_request_context; FastMcp::Transports::RackTransport does.'
+      )
+    end
 
     # Apply tool filters and register filtered tools
     def register_filtered_tools(filtered_server, request)
