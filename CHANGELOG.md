@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Server#error_formatter` for machine-readable failure payloads on `tools/call`. When set,
   refused calls are reported as tool errors (`isError: true`) instead of JSON-RPC `-32602`, so a
   client handles one failure shape rather than two.
+- Pluggable transport authentication via an `authenticator:` option. An authenticator returns a
+  *principal* for an accepted request, which is placed in the per-request context and readable by
+  tools through `server.current_request_context[:principal]`. `FastMcp::Authentication` ships a
+  constant-time `TokenAuthenticator`, a CIDR-aware `IpAllowlist`, and a `Chain` to compose them.
 
 ### Fixed
 

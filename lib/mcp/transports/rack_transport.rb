@@ -41,6 +41,7 @@ module FastMcp
         @allowed_origins = options[:allowed_origins] || DEFAULT_ALLOWED_ORIGINS
         @localhost_only = options.fetch(:localhost_only, true) # Default to localhost-only mode
         @allowed_ips = options[:allowed_ips] || DEFAULT_ALLOWED_IPS
+        @authenticator = options[:authenticator]
         @sse_clients = Concurrent::Hash.new
         @sse_clients_mutex = Mutex.new
         @running = false
@@ -145,6 +146,31 @@ module FastMcp
 
       private
 
+      # Runs the configured authenticator, if any, and stores the resulting principal on the Rack
+      # env so it survives to wherever the request context is opened.
+      #
+      # @return [Object, nil] the principal, +true+ when no authenticator is configured, or nil
+      #   when the request should be refused
+      def resolve_principal(request, env)
+        return true unless @authenticator
+
+        principal = @authenticator.call(request)
+
+        if principal
+          env[FastMcp::Authentication::ENV_KEY] = principal
+        else
+          @logger.warn("Rejected unauthenticated MCP request from #{request.ip}")
+        end
+
+        principal
+      end
+
+      # Extra values to open the request context with, beyond the transport itself.
+      def request_context_for(request)
+        principal = request.env[FastMcp::Authentication::ENV_KEY]
+        principal.nil? ? {} : { principal: principal }
+      end
+
       def valid_client_ip?(request)
         client_ip = request.ip
 
@@ -217,6 +243,9 @@ module FastMcp
 
         # Validate Origin header to prevent DNS rebinding attacks
         return forbidden_response('Forbidden: Origin validation failed') unless validate_origin(request, env)
+
+        # Authenticate, and remember who for the rest of the request
+        return unauthorized_response unless resolve_principal(request, env)
 
         # Get the appropriate server for this request
         request_server = get_server_for_request(request, env)
@@ -556,7 +585,7 @@ module FastMcp
         # Let the specific server handle the JSON request directly
         response =
           if server.respond_to?(:with_request_context)
-            server.with_request_context(transport: self) do
+            server.with_request_context(transport: self, **request_context_for(request)) do
               server.handle_request(body, headers: headers)
             end
           else
@@ -571,6 +600,11 @@ module FastMcp
       # Return a method not allowed error response
       def method_not_allowed_response
         json_rpc_error_response(405, -32_601, 'Method not allowed')
+      end
+
+      # Return an unauthorized error response
+      def unauthorized_response
+        json_rpc_error_response(401, -32_000, 'Unauthorized: Invalid or missing credentials')
       end
 
       # Handle JSON parse errors

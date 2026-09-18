@@ -9,6 +9,7 @@ require_relative 'transports/rack_transport'
 require_relative 'transports/authenticated_rack_transport'
 require_relative 'logger'
 require_relative 'server_filtering'
+require_relative 'authentication'
 
 module FastMcp
   class Server # rubocop:disable Metrics/ClassLength
