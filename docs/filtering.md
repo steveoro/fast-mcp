@@ -168,9 +168,26 @@ env['fast_mcp.server'] = custom_filtered_server
 
 This takes precedence over any configured filters.
 
-### Caching
+### Filter Modes
 
-The RackTransport automatically caches filtered server instances based on request parameters to improve performance. Identical requests will reuse the same filtered server instance.
+Filtering applies to `tools/call` as well as `tools/list`, so a hidden tool cannot be invoked by
+name. `Server#filter_mode` chooses how that refusal reads:
+
+```ruby
+server.filter_mode = :deny # default is :hide
+```
+
+- `:hide` reports the tool as unknown, giving nothing away about what exists.
+- `:deny` reports it as a refusal. Friendlier to an agent, which can then explain the situation
+  instead of assuming it mistyped a tool name. When an
+  [error formatter](tools.md#error-formatting) is configured, the refusal is delivered through it
+  as a structured payload.
+
+### Resolving Visibility Directly
+
+`visible_tools(request)`, `visible_resources(request)` and `tool_visible?(tool, request)` answer
+what a given request may see, should you need it outside the normal dispatch path. Pass `nil` for
+the request to skip filtering entirely.
 
 ### Combining with Authentication
 
@@ -188,12 +205,19 @@ end
 
 ## Thread Safety
 
-The filtering system is designed to be completely thread-safe:
+Filters are applied **in place**, against the request carried in the server's per-request
+context. Nothing is cloned and no shared state is mutated, so concurrent requests with different
+filters do not interfere.
 
-- Each request gets its own server instance
-- No shared state is modified
-- Original server configuration remains unchanged
-- Concurrent requests with different filters work correctly
+Earlier versions built a filtered copy of the server for each request. That looked safer but was
+not: registering the tools on a copy assigns `tool.server = self`, which is state on the tool
+*class*, so one request's copy silently repointed every other request's tools at it. Because
+request contexts are keyed by server identity, a concurrent tool reading
+`self.class.server.current_request_context` could get another request's context, or none.
+
+`create_filtered_copy` still exists for callers that genuinely want a separate `Server` instance,
+but it carries that caveat and is no longer used to serve requests. Avoid combining it with
+per-request contexts.
 
 ## Examples
 

@@ -282,6 +282,155 @@ RSpec.describe 'FastMcp::Server filtering' do
     end
   end
   
+  describe 'in-place filtering' do
+    let(:admin_request) { double('request', params: { 'role' => 'admin' }) }
+    let(:user_request) { double('request', params: { 'role' => 'user' }) }
+
+    before do
+      server.filter_tools do |req, tools|
+        req.params['role'] == 'admin' ? tools : tools.reject { |t| t.tags.include?(:admin) }
+      end
+    end
+
+    it 'resolves the visible tools per request without building a server' do
+      expect(server.visible_tools(admin_request).map(&:tool_name)).to include('admin_tool')
+      expect(server.visible_tools(user_request).map(&:tool_name)).not_to include('admin_tool')
+    end
+
+    it 'filters nothing when there is no request scope' do
+      expect(server.visible_tools(nil).size).to eq(server.tools.size)
+    end
+
+    it 'answers tool_visible? consistently with visible_tools' do
+      admin_tool = server.tools['admin_tool']
+
+      expect(server.tool_visible?(admin_tool, admin_request)).to be(true)
+      expect(server.tool_visible?(admin_tool, user_request)).to be(false)
+    end
+
+    # The reason filtering stopped cloning the server. register_tool assigns `tool.server = self`,
+    # which is state on the tool *class*, so building a filtered copy for one request silently
+    # repointed every other request's tools at it. Request contexts are keyed by server identity,
+    # so a tool would then read the wrong context — or none.
+    it 'leaves tool.server pointing at the real server, so request contexts stay intact' do
+      shared_tool = server.tools['user_tool']
+
+      server.visible_tools(admin_request)
+      server.visible_tools(user_request)
+
+      expect(shared_tool.server).to equal(server)
+
+      server.with_request_context(transport: nil, principal: :alice, request: user_request) do
+        expect(shared_tool.server.current_request_context[:principal]).to eq(:alice)
+      end
+    end
+
+    it 'keeps contexts separate across concurrent requests' do
+      shared_tool = server.tools['user_tool']
+      thread_count = 4
+      seen = []
+      mutex = Mutex.new
+      opened = Queue.new
+      release = Queue.new
+
+      threads = Array.new(thread_count) do |index|
+        Thread.new do
+          principal = :"agent_#{index}"
+
+          server.with_request_context(transport: nil, principal: principal, request: user_request) do
+            opened << true
+            release.pop # hold the context open until every thread has one
+            mutex.synchronize { seen << [principal, shared_tool.server.current_request_context[:principal]] }
+          end
+        end
+      end
+
+      # All four contexts are provably open at the same time before anything reads one.
+      thread_count.times { opened.pop }
+      thread_count.times { release << true }
+      threads.each(&:join)
+
+      expect(seen.size).to eq(thread_count)
+      expect(seen).to all(satisfy { |expected, actual| expected == actual })
+    end
+  end
+
+  describe '#filter_mode' do
+    let(:user_request) { double('request', params: { 'role' => 'user' }) }
+    let(:transport) { instance_double('Transport', send_message: nil) }
+
+    before do
+      server.filter_tools do |req, tools|
+        req.params['role'] == 'admin' ? tools : tools.reject { |t| t.tags.include?(:admin) }
+      end
+      server.transport = transport
+    end
+
+    def call_hidden_tool
+      captured = { result: nil, error: nil }
+      allow(server).to receive(:send_result) { |result, _id| captured[:result] = result }
+      allow(server).to receive(:send_error) { |code, message, _id| captured[:error] = [code, message] }
+
+      server.with_request_context(transport: transport, request: user_request) do
+        server.handle_request(
+          { jsonrpc: '2.0', method: 'tools/call', params: { name: 'admin_tool', arguments: {} }, id: 1 }.to_json
+        )
+      end
+
+      captured
+    end
+
+    it 'defaults to :hide' do
+      expect(server.filter_mode).to eq(:hide)
+    end
+
+    it 'rejects an unknown mode' do
+      expect { server.filter_mode = :maybe }.to raise_error(ArgumentError, /filter_mode/)
+    end
+
+    # A filtered tool must not be callable either, or tools/list would be decoration rather than
+    # a boundary.
+    context 'with :hide' do
+      it 'reports a filtered tool as unknown, giving nothing away' do
+        expect(call_hidden_tool[:error]).to eq([-32_602, 'Tool not found: admin_tool'])
+      end
+    end
+
+    context 'with :deny' do
+      before { server.filter_mode = :deny }
+
+      it 'reports a filtered tool as a refusal' do
+        expect(call_hidden_tool[:error]).to eq([-32_602, 'Unauthorized'])
+      end
+
+      it 'routes the refusal through the error formatter when one is configured' do
+        server.error_formatter { |message:, tool_name:, error:| JSON.generate(tool: tool_name, klass: error.class.name, message: message) }
+
+        captured = call_hidden_tool
+
+        expect(captured[:error]).to be_nil
+        expect(captured[:result][:isError]).to be(true)
+        expect(JSON.parse(captured[:result][:content].first[:text])).to include(
+          'tool' => 'admin_tool',
+          'klass' => 'FastMcp::Server::UnauthorizedError'
+        )
+      end
+    end
+
+    it 'still allows a tool the request can see' do
+      captured = { result: nil }
+      allow(server).to receive(:send_result) { |result, _id| captured[:result] = result }
+
+      server.with_request_context(transport: transport, request: user_request) do
+        server.handle_request(
+          { jsonrpc: '2.0', method: 'tools/call', params: { name: 'user_tool', arguments: {} }, id: 1 }.to_json
+        )
+      end
+
+      expect(captured[:result][:isError]).to be(false)
+    end
+  end
+
   describe 'Thread safety' do
     it 'creates independent server instances for concurrent requests' do
       server.filter_tools do |req, tools|

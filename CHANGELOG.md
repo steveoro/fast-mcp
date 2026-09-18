@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0.pre.4] - 2026-09-18
+
+### Added
+
+- `Server#filter_mode` selects how a call to a filtered-out tool is answered: `:hide` (default,
+  reported as unknown) or `:deny` (reported as a refusal, and routed through `error_formatter`
+  when one is configured).
+- `Server#visible_tools`, `#visible_resources` and `#tool_visible?` resolve what a given request
+  may see, without building anything.
+
+### Changed
+
+- Tool and resource filters are applied **in place** rather than by cloning the server per
+  request. Cloning called `register_tool` on the copy, which assigns `tool.server = self` — state
+  on the tool *class* — so one request's filtered copy silently repointed every other request's
+  tools at it. Since request contexts are keyed by server identity, a concurrent tool call could
+  read another request's context, or none at all.
+- Filtering now also applies to `tools/call` and `resources/list`, not just `tools/list`. A
+  filtered tool was previously still callable.
+- `create_filtered_copy` is deprecated but retained; the request path no longer uses it.
+- `RackTransport#clear_filtered_servers_cache` is deprecated and always returns 0: there are no
+  server copies to cache. The private cache-key helpers have been removed.
+
 ## [1.7.0.pre.3] - 2026-09-18
 
 ### Added

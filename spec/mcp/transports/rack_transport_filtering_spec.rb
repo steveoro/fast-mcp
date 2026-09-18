@@ -47,7 +47,9 @@ RSpec.describe 'FastMcp::Transports::RackTransport with filtering' do
         end
       end
       
-      it 'creates a filtered server for requests' do
+      # Filters are applied in place now. Cloning the server per request reassigned
+      # `tool.server` globally, which corrupted per-request contexts.
+      it 'serves the request from the original server, without cloning' do
         env = {
           'PATH_INFO' => '/mcp/messages',
           'REQUEST_METHOD' => 'POST',
@@ -55,11 +57,27 @@ RSpec.describe 'FastMcp::Transports::RackTransport with filtering' do
           'REMOTE_ADDR' => '127.0.0.1',
           'rack.input' => StringIO.new('{"jsonrpc":"2.0","method":"ping","id":1}')
         }
-        
-        # The transport should create a filtered server
-        expect(server).to receive(:create_filtered_copy).and_call_original
-        
+
+        expect(server).not_to receive(:create_filtered_copy)
+
         transport.call(env)
+      end
+
+      it 'still applies the filter to tools/list' do
+        env = {
+          'PATH_INFO' => '/mcp/messages',
+          'REQUEST_METHOD' => 'POST',
+          'QUERY_STRING' => 'role=user',
+          'REMOTE_ADDR' => '127.0.0.1',
+          'rack.input' => StringIO.new('{"jsonrpc":"2.0","method":"tools/list","id":1}')
+        }
+        broadcast = nil
+        allow(transport).to receive(:send_message) { |message| broadcast = message }
+
+        transport.call(env)
+
+        names = broadcast.dig(:result, :tools).map { |tool| tool[:name] }
+        expect(names).to eq(['user_tool'])
       end
     end
     
@@ -104,14 +122,12 @@ RSpec.describe 'FastMcp::Transports::RackTransport with filtering' do
       expect(filtered_server.tools.keys).not_to include('admin_tool')
     end
     
-    it 'caches filtered servers' do
+    # There is nothing to cache any more: no per-request server copies are built, so the cache
+    # stays empty and its public invalidation method is a no-op kept for existing callers.
+    it 'caches nothing, because no server copies are created' do
       server.filter_tools { |_request, tools| tools }
-      
-      # Get the cache
       cache = transport.instance_variable_get(:@filtered_servers_cache)
-      expect(cache).to be_empty
-      
-      # After a request, it should have cached a server
+
       env = {
         'PATH_INFO' => '/mcp/messages',
         'REQUEST_METHOD' => 'POST',
@@ -119,13 +135,11 @@ RSpec.describe 'FastMcp::Transports::RackTransport with filtering' do
         'REMOTE_ADDR' => '127.0.0.1',
         'rack.input' => StringIO.new('{"jsonrpc":"2.0","method":"ping","id":1}')
       }
-      
+
       transport.call(env)
-      
-      # Cache should have one entry
-      expect(cache.size).to eq(1)
-      expect(transport.clear_filtered_servers_cache).to eq(1)
+
       expect(cache).to be_empty
+      expect(transport.clear_filtered_servers_cache).to eq(0)
     end
   end
 end 
