@@ -39,6 +39,9 @@ module FastMcp
   # @option options [Logger] :logger The logger to use
   # @option options [Class] :transport The transport class to use
   # @option options [Array<String,Regexp>] :allowed_origins List of allowed origins for DNS rebinding protection
+  # @option options [Boolean] :localhost_only Restrict clients to loopback by default
+  # @option options [Array<String>] :allowed_ips Exact addresses or CIDR ranges to enforce
+  # @option options [#call] :authenticator Request authenticator returning a principal or nil
   # @yield [server] A block to configure the server
   # @yieldparam server [FastMcp::Server] The server to configure
   # @return [#call] The Rack middleware
@@ -68,6 +71,7 @@ module FastMcp
   # @option options [Array<String,Regexp>] :allowed_origins List of allowed origins for DNS rebinding protection
   # @option options [Boolean] :localhost_only Restrict clients to loopback by default
   # @option options [Array<String>] :allowed_ips Exact addresses or CIDR ranges to enforce
+  # @option options [#call] :authenticator Request authenticator returning a principal or nil
   # @yield [server] A block to configure the server
   # @yieldparam server [FastMcp::Server] The server to configure
   # @return [#call] The Rack middleware
@@ -136,6 +140,9 @@ module FastMcp
   # @option options [Boolean] :authenticate Whether to use authentication
   # @option options [String] :auth_token The authentication token
   # @option options [Array<String,Regexp>] :allowed_origins List of allowed origins for DNS rebinding protection
+  # @option options [Boolean] :localhost_only Restrict clients to loopback by default
+  # @option options [Array<String>] :allowed_ips Exact addresses or CIDR ranges to enforce
+  # @option options [#call] :authenticator Request authenticator returning a principal or nil
   # @yield [server] A block to configure the server
   # @yieldparam server [FastMcp::Server] The server to configure
   # @return [#call] The Rack middleware

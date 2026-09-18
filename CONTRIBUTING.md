@@ -37,7 +37,7 @@ To set up your development environment:
 1. Fork the repository on GitHub
 2. Clone your fork locally:
    ```bash
-   git clone https://github.com/yjacquin/fast-mcp.git
+   git clone https://github.com/steveoro/fast-mcp.git
    cd fast-mcp
    ```
 3. Install dependencies:

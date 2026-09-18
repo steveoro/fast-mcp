@@ -373,6 +373,7 @@ RSpec.describe FastMcp::Transports::RackTransport do
         )
 
         expect(restricted_transport.call(message_env('203.0.113.7')).first).to eq(403)
+        expect(restricted_transport.call(message_env('127.0.0.1')).first).to eq(200)
       end
 
       it 'accepts CIDR ranges and IPv4-mapped IPv6 addresses' do

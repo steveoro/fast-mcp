@@ -81,8 +81,8 @@ module FastMcp
 
     # Accepts a request whose client address falls inside one of the given ranges.
     #
-    # Unlike the transport's +allowed_ips+ option, which compares addresses exactly, entries here
-    # may be CIDR ranges. Useful as the first link of a Chain, or alone on a trusted network.
+    # The Rack transport reuses this class for its +allowed_ips+ option. It is
+    # also useful as the first link of a Chain, or alone on a trusted network.
     class IpAllowlist
       # @param ranges [String, Array<String>] addresses or CIDR ranges; a single String may hold
       #   a comma-separated list

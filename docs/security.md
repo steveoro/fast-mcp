@@ -78,8 +78,10 @@ FastMcp.rack_middleware(
 )
 ```
 
-An explicitly empty or entirely invalid list is rejected at startup. IPv4
-addresses represented as IPv4-mapped IPv6 are normalized before comparison.
+An explicitly empty or entirely invalid list is rejected at startup. In a
+mixed list, invalid entries are ignored while valid ranges remain active.
+IPv4 addresses represented as IPv4-mapped IPv6 are normalized before
+comparison.
 
 `Rack::Request#ip` can derive its value from forwarding headers. Configure
 trusted proxies correctly before treating an IP allowlist as authoritative.
