@@ -91,6 +91,60 @@ RSpec.describe 'FastMcp::Transports::RackTransport with authentication' do
     end
   end
 
+  # A browser never attaches credentials to a preflight. If authentication ran first the
+  # preflight would 401, the real request would never be sent, and an authenticated transport
+  # would be unreachable from a browser.
+  describe 'CORS preflight' do
+    def preflight(path: '/mcp/sse', request_method: 'GET')
+      env = Rack::MockRequest.env_for(
+        path,
+        method: 'OPTIONS',
+        'REMOTE_ADDR' => '127.0.0.1',
+        'HTTP_ORIGIN' => 'http://localhost',
+        'HTTP_ACCESS_CONTROL_REQUEST_METHOD' => request_method,
+        'HTTP_ACCESS_CONTROL_REQUEST_HEADERS' => 'authorization'
+      )
+
+      transport.call(env)
+    end
+
+    it 'is answered without credentials' do
+      status, headers, = preflight
+
+      expect(status).to eq(200)
+      expect(headers['Access-Control-Allow-Origin']).to eq('*')
+    end
+
+    it 'advertises the methods and headers a real request needs' do
+      _status, headers, = preflight(request_method: 'POST')
+
+      expect(headers['Access-Control-Allow-Methods']).to include('GET', 'POST', 'OPTIONS')
+      expect(headers['Access-Control-Allow-Headers']).to include('Authorization')
+      expect(headers['Access-Control-Allow-Headers']).to include('Content-Type')
+    end
+
+    it 'is answered on the messages route too' do
+      expect(preflight(path: '/mcp/messages').first).to eq(200)
+    end
+
+    # The whole point of answering the preflight: the credentialed request that follows works.
+    it 'is followed by a successful authenticated request' do
+      expect(preflight.first).to eq(200)
+      expect(post_mcp(authorization: 'Bearer s3cret').first).to eq(200)
+    end
+
+    it 'still refuses a preflight from a disallowed origin' do
+      env = Rack::MockRequest.env_for(
+        '/mcp/sse',
+        method: 'OPTIONS',
+        'REMOTE_ADDR' => '127.0.0.1',
+        'HTTP_ORIGIN' => 'http://evil.example.com'
+      )
+
+      expect(transport.call(env).first).to eq(403)
+    end
+  end
+
   describe 'requests outside the MCP path' do
     it 'are passed through untouched, with no authentication applied' do
       env = Rack::MockRequest.env_for('/somewhere-else', 'REMOTE_ADDR' => '127.0.0.1')

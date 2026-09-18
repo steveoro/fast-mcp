@@ -557,6 +557,19 @@ RSpec.describe FastMcp::Server do
           expect(text).not_to include(Dir.pwd)
         end
       end
+
+      # The outer rescue is reachable from application code — a raising error_formatter, a broken
+      # transport — so it has to be as careful with backtraces as the tool rescue is.
+      it 'does not disclose a backtrace from the outer request rescue either' do
+        allow(server).to receive(:handle_tools_call).and_raise('outer boom')
+        captured = nil
+        allow(server).to receive(:send_error) { |_code, message, _id| captured = message }
+
+        server.handle_request(error_request)
+
+        expect(captured).to eq('Internal error: outer boom')
+        expect(captured).not_to include(Dir.pwd)
+      end
     end
   end
 
@@ -657,6 +670,28 @@ RSpec.describe FastMcp::Server do
         expect(payload).to eq(
           'tool' => 'failing-tool', 'message' => 'bad input', 'klass' => 'ArgumentError'
         )
+      end
+
+      # A formatter is application code on an error path. A fault in it must not escalate into a
+      # worse failure, and must not reach the outer rescue, which is where a backtrace could
+      # still have been disclosed.
+      context 'and the formatter itself raises' do
+        before do
+          server.error_formatter { raise 'formatter boom' }
+          server.register_tool(failing_tool)
+        end
+
+        it 'falls back to the default error text' do
+          expect(call_tool('failing-tool')[:result][:content].first[:text]).to eq('Error: bad input')
+        end
+
+        it 'discloses neither the formatter fault nor a backtrace' do
+          text = call_tool('failing-tool')[:result][:content].first[:text]
+
+          expect(text).not_to include('formatter boom')
+          expect(text).not_to include('server_spec.rb')
+          expect(text).not_to include(Dir.pwd)
+        end
       end
 
       # One failure shape is easier for a client to handle than two.

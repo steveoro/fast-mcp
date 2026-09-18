@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.7.0.pre.3] - 2026-09-18
 
 ### Added
 
@@ -22,8 +22,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Results without an output schema are JSON-encoded when they are a Hash or Array. `to_s`
   produced Ruby inspect syntax (`{name: "value"}`), which is not valid JSON and could not be
   parsed by a client.
-- Exception backtraces are no longer sent to the client on a failed `tools/call`; they are
-  logged instead. They disclosed absolute paths and internal structure.
+- Exception backtraces are no longer sent to the client, on a failed `tools/call` or from the
+  outer request rescue; they are logged instead. They disclosed absolute paths and internal
+  structure.
+- A raising `error_formatter` no longer escalates into a JSON-RPC internal error. The fault is
+  logged and the default error text is used instead.
+- CORS preflight requests to an MCP path are answered before authentication, so an authenticated
+  transport stays reachable from a browser. Preflight responses now advertise `POST` and the
+  header carrying the credential, alongside `GET`, `OPTIONS` and `Content-Type`.
 
 ## [1.7.0.pre.2] - 2026-09-17
 

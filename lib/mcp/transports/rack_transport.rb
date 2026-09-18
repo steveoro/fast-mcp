@@ -15,14 +15,17 @@ module FastMcp
       DEFAULT_ALLOWED_IPS = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].freeze
       SERVER_ENV_KEY = 'fast_mcp.server'
 
+      # Request headers a browser is allowed to send to an MCP endpoint.
+      DEFAULT_CORS_ALLOWED_HEADERS = %w[Content-Type Authorization].freeze
+
       SSE_HEADERS = {
         'Content-Type' => 'text/event-stream',
         'Cache-Control' => 'no-cache, no-store, must-revalidate',
         'Connection' => 'keep-alive',
         'X-Accel-Buffering' => 'no', # For Nginx
         'Access-Control-Allow-Origin' => '*', # Allow CORS
-        'Access-Control-Allow-Methods' => 'GET, OPTIONS',
-        'Access-Control-Allow-Headers' => 'Content-Type',
+        'Access-Control-Allow-Methods' => 'GET, POST, OPTIONS',
+        'Access-Control-Allow-Headers' => 'Content-Type, Authorization',
         'Access-Control-Max-Age' => '86400', # 24 hours
         'Keep-Alive' => 'timeout=600', # 10 minutes timeout
         'Pragma' => 'no-cache',
@@ -42,6 +45,7 @@ module FastMcp
         @localhost_only = options.fetch(:localhost_only, true) # Default to localhost-only mode
         @allowed_ips = options[:allowed_ips] || DEFAULT_ALLOWED_IPS
         @authenticator = options[:authenticator]
+        @cors_allowed_headers = Array(options[:cors_allowed_headers] || DEFAULT_CORS_ALLOWED_HEADERS)
         @sse_clients = Concurrent::Hash.new
         @sse_clients_mutex = Mutex.new
         @running = false
@@ -244,6 +248,11 @@ module FastMcp
         # Validate Origin header to prevent DNS rebinding attacks
         return forbidden_response('Forbidden: Origin validation failed') unless validate_origin(request, env)
 
+        # Answer the CORS preflight before authenticating. A browser never attaches credentials to
+        # a preflight, so checking auth first would make an authenticated transport unreachable
+        # from a browser: the preflight would 401 and the real request would never be sent.
+        return [200, setup_cors_headers, []] if request.options?
+
         # Authenticate, and remember who for the rest of the request
         return unauthorized_response unless resolve_principal(request, env)
 
@@ -345,11 +354,20 @@ module FastMcp
       def setup_cors_headers
         {
           'Access-Control-Allow-Origin' => '*',
-          'Access-Control-Allow-Methods' => 'GET, OPTIONS',
-          'Access-Control-Allow-Headers' => 'Content-Type',
+          'Access-Control-Allow-Methods' => 'GET, POST, OPTIONS',
+          'Access-Control-Allow-Headers' => cors_allowed_headers.join(', '),
           'Access-Control-Max-Age' => '86400', # 24 hours
           'Content-Type' => 'text/plain'
         }
+      end
+
+      # Headers a browser may send on an MCP request. Authorization is included by default
+      # because that is where a bearer credential goes; a transport reading the credential from
+      # somewhere else adds its own (see AuthenticatedRackTransport).
+      #
+      # @return [Array<String>]
+      def cors_allowed_headers
+        @cors_allowed_headers.uniq
       end
 
       # Extract client ID from request or generate a new one

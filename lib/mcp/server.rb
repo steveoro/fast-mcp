@@ -263,8 +263,12 @@ module FastMcp
         send_error(-32_601, "Method not found: #{method}", id)
       end
     rescue StandardError => e
-      @logger.error("Error handling request: #{e.message}, #{e.backtrace.join("\n")}")
-      send_error(-32_600, "Internal error: #{e.message}, #{e.backtrace.join("\n")}", id)
+      # Logged in full, sent without the backtrace: it discloses absolute paths and internal
+      # structure to whoever drives the client. This path is reachable from application code —
+      # a raising error_formatter, for one — so it has to be as careful as the tool rescue.
+      @logger.error("Error handling request: #{e.message}")
+      @logger.error(e.backtrace.join("\n")) if e.backtrace
+      send_error(-32_600, "Internal error: #{e.message}", id)
     end
 
     # Notify subscribers about a resource update
@@ -562,11 +566,20 @@ module FastMcp
     # Builds the text payload of a failed tools/call, delegating to +error_formatter+ when one is
     # configured. Defaults to the historical "Error: <message>" string.
     #
+    # A formatter is application code running on an error path, so a fault in it must not escalate
+    # into a second, worse failure: it is contained here and the safe default is used instead.
+    #
     # @return [String]
     def error_text_for(message, tool_name: nil, error: nil)
       return "Error: #{message}" unless @error_formatter
 
-      @error_formatter.call(message: message, tool_name: tool_name, error: error).to_s
+      begin
+        @error_formatter.call(message: message, tool_name: tool_name, error: error).to_s
+      rescue StandardError => e
+        @logger.error("error_formatter raised #{e.class}: #{e.message}; falling back to default text")
+        @logger.error(e.backtrace.join("\n")) if e.backtrace
+        "Error: #{message}"
+      end
     end
 
     # Handle resources/list request
