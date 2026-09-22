@@ -13,9 +13,15 @@ module FastMcp
       @resource_filters << block if block_given?
     end
 
+    # Add filter for prompts. Same contract as #filter_tools: the block receives the request and
+    # the current list, and returns the prompts this request may see.
+    def filter_prompts(&block)
+      @prompt_filters << block if block_given?
+    end
+
     # Check if filters are configured
     def contains_filters?
-      @tool_filters.any? || @resource_filters.any?
+      @tool_filters.any? || @resource_filters.any? || @prompt_filters.any?
     end
 
     # Tools this request is allowed to see, filtered in place.
@@ -69,6 +75,28 @@ module FastMcp
       visible_tools(request).include?(tool)
     end
 
+    # Prompts this request is allowed to see. With no filters configured this is every prompt,
+    # so existing servers are unchanged.
+    #
+    # @param request [Rack::Request, nil]
+    # @return [Array<Class>]
+    def visible_prompts(request)
+      if request.nil?
+        warn_filters_inactive if @prompt_filters.any?
+        return @prompts.values
+      end
+      return @prompts.values if @prompt_filters.empty?
+
+      apply_prompt_filters(request)
+    end
+
+    # @param prompt [Class]
+    # @param request [Rack::Request, nil]
+    # @return [Boolean]
+    def prompt_visible?(prompt, request)
+      visible_prompts(request).include?(prompt)
+    end
+
     private
 
     # Filters need a request to filter against. A transport that never supplies one turns every
@@ -94,6 +122,14 @@ module FastMcp
     end
 
     # Apply all resource filters to the resources collection
+    def apply_prompt_filters(request)
+      filtered_prompts = @prompts.values
+      @prompt_filters.each do |filter|
+        filtered_prompts = filter.call(request, filtered_prompts)
+      end
+      filtered_prompts
+    end
+
     def apply_resource_filters(request)
       filtered_resources = @resources
       @resource_filters.each do |filter|

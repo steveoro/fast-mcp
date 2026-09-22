@@ -55,6 +55,7 @@ module FastMcp
       @capabilities = DEFAULT_CAPABILITIES.dup
       @tool_filters = []
       @resource_filters = []
+      @prompt_filters = []
       @on_error_result = nil
       @error_formatter = nil
       @filter_mode = :hide
@@ -425,7 +426,7 @@ module FastMcp
 
     # Handle prompts/list request.
     def handle_prompts_list(id)
-      send_result({ prompts: @prompts.values.map(&:metadata) }, id)
+      send_result({ prompts: visible_prompts(current_request).map(&:metadata) }, id)
     end
 
     # Handle prompts/get request.
@@ -435,6 +436,13 @@ module FastMcp
 
       prompt = @prompts[name]
       return send_error(-32_602, "Prompt not found: #{name}", id) unless prompt
+
+      # A filtered prompt is not fetchable by name either, or prompts/list would be decoration.
+      unless prompt_visible?(prompt, current_request)
+        return send_error(-32_602, "Prompt not found: #{name}", id) if @filter_mode == :hide
+
+        return send_unauthorized_result(name, id)
+      end
 
       arguments = params['arguments'] || {}
       missing = prompt.arguments.filter_map do |definition|

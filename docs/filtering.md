@@ -57,6 +57,21 @@ FastMcp.mount_in_rails(app) do |server|
 end
 ```
 
+### Filtering Prompts
+
+```ruby
+server.filter_prompts do |request, prompts|
+  role = request.params['role']
+
+  role == 'admin' ? prompts : prompts.reject { |prompt| prompt.prompt_name.start_with?('admin_') }
+end
+```
+
+With no prompt filters configured, `prompts/list` and `prompts/get` serve every registered prompt.
+A configured filter applies to both, so a prompt left out of the list cannot be fetched by name.
+`filter_mode` works the same way it does for tools: `:hide` reports it as not found, `:deny`
+reports it as a refusal.
+
 ### Filtering Resources
 
 ```ruby

@@ -399,4 +399,64 @@ RSpec.describe 'FastMcp::Server filtering' do
     end
   end
 
-end 
+  describe 'prompt filtering' do
+    let(:staff_prompt) do
+      Class.new(FastMcp::Prompt) do
+        prompt_name 'staff_prompt'
+        description 'Staff only'
+        def messages = [{ role: 'user', content: { type: 'text', text: 'staff' } }]
+      end
+    end
+
+    let(:public_prompt) do
+      Class.new(FastMcp::Prompt) do
+        prompt_name 'public_prompt'
+        description 'Anyone'
+        def messages = [{ role: 'user', content: { type: 'text', text: 'public' } }]
+      end
+    end
+
+    let(:request) { Rack::Request.new(Rack::MockRequest.env_for('/mcp', params: { 'role' => 'user' })) }
+
+    before do
+      server.register_prompts(staff_prompt, public_prompt)
+      server.filter_prompts do |req, prompts|
+        req.params['role'] == 'staff' ? prompts : prompts.reject { |prompt| prompt.prompt_name == 'staff_prompt' }
+      end
+    end
+
+    it 'omits filtered prompts from the list' do
+      names = server.visible_prompts(request).map(&:prompt_name)
+
+      expect(names).to eq(['public_prompt'])
+    end
+
+    it 'returns every prompt when no filters are configured' do
+      unfiltered = FastMcp::Server.new(name: 'plain', version: '1.0.0', logger: Logger.new(nil))
+      unfiltered.register_prompts(staff_prompt, public_prompt)
+
+      expect(unfiltered.visible_prompts(request).map(&:prompt_name))
+        .to match_array(%w[staff_prompt public_prompt])
+    end
+
+    def fetch_prompt(name)
+      captured = {}
+      allow(server).to receive(:send_result) { |result, _id| captured[:result] = result }
+      allow(server).to receive(:send_error) { |code, message, _id| captured[:error] = [code, message] }
+      server.with_request_context(transport: nil, request: request) do
+        server.handle_request({ jsonrpc: '2.0', method: 'prompts/get', params: { 'name' => name }, id: 1 }.to_json)
+      end
+      captured
+    end
+
+    it 'refuses to render a filtered prompt, the same way it refuses an unknown one in hide mode' do
+      expect(fetch_prompt('staff_prompt')[:error]).to eq([-32_602, 'Prompt not found: staff_prompt'])
+    end
+
+    it 'still renders a visible prompt' do
+      result = fetch_prompt('public_prompt')[:result]
+
+      expect(result[:messages].first[:content][:text]).to eq('public')
+    end
+  end
+end
