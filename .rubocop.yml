@@ -80,3 +80,10 @@ Lint/DuplicateBranch:
 Lint/UselessConstantScoping:
   Exclude:
     - "lib/mcp/server.rb"
+
+# Example scripts define several classes each; lib files intentionally reopen modules/monkey-patch Dry
+Style/OneClassPerFile:
+  Exclude:
+    - "examples/**/*"
+    - "lib/fast_mcp.rb"
+    - "lib/mcp/tool.rb"

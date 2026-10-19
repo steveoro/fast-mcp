@@ -5,7 +5,7 @@
 Run Ruby, Bundler, Rake, RSpec, and RuboCop through the project RVM gemset:
 
 ```bash
-source /usr/share/rvm/scripts/rvm &&
+source ~/.rvm/scripts/rvm &&
   rvm use ruby-3.4.1@fast_mcp &&
   bundle exec <command>
 ```

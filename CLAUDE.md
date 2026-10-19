@@ -13,7 +13,7 @@ A maintained fork (`steveoro/fast-mcp`) of the FastMCP Ruby gem: a server-side i
 Run everything through the project RVM gemset (`.versions.conf`):
 
 ```bash
-source /usr/share/rvm/scripts/rvm && rvm use ruby-3.4.1@fast_mcp && bundle exec <command>
+source ~/.rvm/scripts/rvm && rvm use ruby-3.4.1@fast_mcp && bundle exec <command>
 ```
 
 - All tests: `bundle exec rspec`
