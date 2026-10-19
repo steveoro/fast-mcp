@@ -85,7 +85,7 @@ module FastMcp
   # @return [FastMcp::Tool] The registered tool
   def self.register_tool(tool)
     self.server ||= FastMcp::Server.new(name: 'mcp-server', version: '1.0.0')
-    self.server.register_tool(tool)
+    server.register_tool(tool)
   end
 
   # Register multiple tools at once
@@ -93,7 +93,7 @@ module FastMcp
   # @return [Array<FastMcp::Tool>] The registered tools
   def self.register_tools(*tools)
     self.server ||= FastMcp::Server.new(name: 'mcp-server', version: '1.0.0')
-    self.server.register_tools(*tools)
+    server.register_tools(*tools)
   end
 
   # Register one prompt with the MCP server.
@@ -101,7 +101,7 @@ module FastMcp
   # @return [Class<FastMcp::Prompt>] the registered prompt
   def self.register_prompt(prompt)
     self.server ||= FastMcp::Server.new(name: 'mcp-server', version: '1.0.0')
-    self.server.register_prompt(prompt)
+    server.register_prompt(prompt)
   end
 
   # Register multiple prompts with the MCP server.
@@ -109,7 +109,7 @@ module FastMcp
   # @return [Array<Class<FastMcp::Prompt>>] registered prompt classes
   def self.register_prompts(*prompts)
     self.server ||= FastMcp::Server.new(name: 'mcp-server', version: '1.0.0')
-    self.server.register_prompts(*prompts)
+    server.register_prompts(*prompts)
   end
 
   # Register a resource with the MCP server
@@ -117,7 +117,7 @@ module FastMcp
   # @return [FastMcp::Resource] The registered resource
   def self.register_resource(resource)
     self.server ||= FastMcp::Server.new(name: 'mcp-server', version: '1.0.0')
-    self.server.register_resource(resource)
+    server.register_resource(resource)
   end
 
   # Register multiple resources at once
@@ -125,7 +125,7 @@ module FastMcp
   # @return [Array<FastMcp::Resource>] The registered resources
   def self.register_resources(*resources)
     self.server ||= FastMcp::Server.new(name: 'mcp-server', version: '1.0.0')
-    self.server.register_resources(*resources)
+    server.register_resources(*resources)
   end
 
   # Mount the MCP middleware in a Rails application
@@ -163,19 +163,19 @@ module FastMcp
 
     # Create or get the server
     self.server = FastMcp::Server.new(name: name, version: version, logger: logger)
-    yield self.server if block_given?
+    yield server if block_given?
 
     # Choose the right middleware based on authentication
-    self.server.transport_klass = if authenticate
-                                    FastMcp::Transports::AuthenticatedRackTransport
-                                  else
-                                    FastMcp::Transports::RackTransport
-                                  end
+    server.transport_klass = if authenticate
+                               FastMcp::Transports::AuthenticatedRackTransport
+                             else
+                               FastMcp::Transports::RackTransport
+                             end
 
     # Insert the middleware in the Rails middleware stack
     app.middleware.use(
-      self.server.transport_klass,
-      self.server,
+      server.transport_klass,
+      server,
       options.merge(path_prefix: path_prefix, messages_route: messages_route, sse_route: sse_route)
     )
   end
@@ -197,6 +197,6 @@ module FastMcp
   # Notify the server that a resource has been updated
   # @param uri [String] The URI of the resource
   def self.notify_resource_updated(uri)
-    self.server.notify_resource_updated(uri)
+    server.notify_resource_updated(uri)
   end
 end
