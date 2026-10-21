@@ -7,6 +7,7 @@ gemspec
 
 group :development, :test do
   gem 'json', '~> 2.0'
+  gem 'mcp', '~> 1.8' # interop spec (§1.9); skipped automatically when absent
   gem 'mime-types', '~> 3.4'
   gem 'pry'
   gem 'rake', '~> 13.0'

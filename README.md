@@ -26,16 +26,37 @@ Fast MCP solves all these problems by providing a clean, Ruby-focused implementa
 
 ## Installation
 
-This maintained fork is distributed from GitHub rather than RubyGems:
+This maintained fork (`steveoro/fast-mcp`, forked from `yjacquin/fast-mcp`) is distributed from GitHub rather than RubyGems:
 
 ```ruby
 gem 'fast-mcp',
     git: 'https://github.com/steveoro/fast-mcp.git',
-    tag: 'v1.7.0'
+    tag: 'v1.8.0'
 ```
 
 The gem name, `require 'fast_mcp'`, and the `FastMcp` module remain compatible
 with the original project.
+
+### Protocol version support
+
+`FastMcp::Server` advertises the following handshake-era versions (newest first):
+
+```
+2025-11-25  2025-06-18  2025-03-26  2024-11-05
+```
+
+`initialize` echoes a supported requested version; anything else (garbage, `nil`, or a
+modern `2026-07-28`+ value) gets the newest version (`2025-11-25`). The modern era
+(`2026-07-28`, no handshake) is **not served yet** — a `server/discover` probe
+returns `-32601`, and SDK clients in `auto` mode fall back to the legacy path
+automatically.
+
+To cap the list (e.g. to two versions):
+
+```ruby
+FastMcp::Server.new(name: 'myapp', version: '1.0',
+                    protocol_versions: %w[2025-03-26 2024-11-05])
+```
 
 ## ✨ Features
 
@@ -427,6 +448,20 @@ FastMcp.rack_middleware(app,
 )
 ```
 
+### New options in 1.8.0
+
+| Option | Transport | Default | Description |
+|---|---|---|---|
+| `protocol_versions:` | `Server.new` | `HANDSHAKE_PROTOCOL_VERSIONS` | Cap the list of advertised handshake versions |
+| `expose_internal_errors:` | `Server.new` | `false` | Forward exception messages to the client in `-32603` responses |
+| `max_request_bytes:` | `RackTransport`, `StdioTransport` | `4 * 1024 * 1024` (Rack) / `nil` (stdio) | Body/line limit; over-limit → HTTP 413 or `-32600` |
+| `cors_allowed_origins:` | `RackTransport` | same as `allowed_origins:` | Origins reflected in `Access-Control-Allow-Origin`; disallowed → no header |
+| `require_sse_session:` | `RackTransport` | `true` | Require a known `sessionId` on every POST; missing → 400, unknown → 404 |
+| `allow_sse_reconnect_takeover:` | `RackTransport` | `false` | Allow a duplicate GET to take over an existing SSE stream |
+| `sse_idle_timeout:` | `RackTransport` | `30 * 60` (30 min) | Reap idle SSE clients after this many seconds |
+| `input:` / `output:` | `StdioTransport` | `$stdin` / `$stdout` | Redirect IO so that log lines never corrupt the JSON stream |
+| `token_verifier:` / `required_scopes:` | `AuthenticatedRackTransport` | `nil` | **Reserved** — OAuth 2.1 hook (not implemented; see docs) |
+
 ### Authentication
 
 Fast MCP supports token-based authentication for all connections:
@@ -486,6 +521,21 @@ Please read our [Contributing Guide](CONTRIBUTING.md) for more details.
 ## 📄 License
 
 This project is available as open source under the terms of the [MIT License](https://opensource.org/licenses/MIT).
+
+## Reference implementation
+
+[`steveoro/graph_mem`](https://github.com/steveoro/graph_mem) is the reference consumer of
+fast-mcp 1.8.0. Every new server feature has at least one real use there:
+
+| fast-mcp 1.8.0 feature | graph_mem 1.53.0 usage |
+|---|---|
+| `HANDSHAKE_PROTOCOL_VERSIONS`, `protocol_versions:`, `negotiate_protocol_version` | `lib/graph_mem/mcp_streamable_http_transport.rb#resolve_session`; stdio runner |
+| `supported_protocol_version?` | `MCP-Protocol-Version` header check in the same transport |
+| `StdioTransport` `input:` / `output:` | `bin/mcp_stdio_runner.rb` (clean stdout) |
+| `max_request_bytes`, `cors_allowed_origins`, `require_sse_session`, `allow_sse_reconnect_takeover`, `sse_idle_timeout` | `config/initializers/fast_mcp.rb` legacy `/mcp/sse` options |
+| `send_message_to`, `remove_subscriber` | `McpStreamableHttpTransport#send_message_to`, `close_session` + reaper |
+| Strict JSON-RPC (`-32700/-32600/-32603`, silent notifications), `expose_internal_errors:` | stdio path; mirrored in graph_mem's Streamable HTTP transport |
+| `token_verifier:` (reserved, not implemented) | Deliberately not used; graph_mem keeps its static bearer + IP policy (`GraphMem::McpAccessPolicy`) |
 
 ## 🙏 Acknowledgments
 

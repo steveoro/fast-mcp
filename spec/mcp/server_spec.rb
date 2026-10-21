@@ -213,7 +213,7 @@ RSpec.describe FastMcp::Server do
         request = { jsonrpc: '2.0', method: 'initialize', id: 1 }.to_json
 
         expect(server).to receive(:send_result).with({
-                                                       protocolVersion: FastMcp::Server::PROTOCOL_VERSION,
+                                                       protocolVersion: FastMcp::Server::HANDSHAKE_PROTOCOL_VERSIONS.first,
                                                        capabilities: server.capabilities,
                                                        serverInfo: {
                                                          name: server.name,
@@ -513,7 +513,7 @@ RSpec.describe FastMcp::Server do
       it 'returns an error for an invalid JSON request' do
         request = 'invalid json'
 
-        expect(server).to receive(:send_error).with(-32_600, 'Invalid Request', nil)
+        expect(server).to receive(:send_error).with(-32_700, 'Parse error', nil)
         server.handle_request(request)
       end
     end
@@ -567,7 +567,7 @@ RSpec.describe FastMcp::Server do
 
         server.handle_request(error_request)
 
-        expect(captured).to eq('Internal error: outer boom')
+        expect(captured).to eq('Internal error')
         expect(captured).not_to include(Dir.pwd)
       end
     end

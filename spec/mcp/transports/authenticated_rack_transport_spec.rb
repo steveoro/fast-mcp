@@ -16,6 +16,7 @@ RSpec.describe FastMcp::Transports::AuthenticatedRackTransport do
   let(:auth_header_name) { 'Authorization' }
   let(:auth_exempt_paths) { ['/public', '/mcp/health'] }
 
+  # require_sse_session: false — these tests exercise auth, not SSE session semantics.
   let(:transport) do
     described_class.new(
       app,
@@ -23,7 +24,8 @@ RSpec.describe FastMcp::Transports::AuthenticatedRackTransport do
       logger: logger,
       auth_token: auth_token,
       auth_header_name: auth_header_name,
-      auth_exempt_paths: auth_exempt_paths
+      auth_exempt_paths: auth_exempt_paths,
+      require_sse_session: false
     )
   end
 
@@ -293,7 +295,8 @@ RSpec.describe FastMcp::Transports::AuthenticatedRackTransport do
           server,
           logger: logger,
           auth_token: auth_token,
-          allowed_origins: allowed_origins
+          allowed_origins: allowed_origins,
+          require_sse_session: false
         )
       end
 

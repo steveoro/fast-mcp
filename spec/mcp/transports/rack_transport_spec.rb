@@ -12,7 +12,9 @@ RSpec.describe FastMcp::Transports::RackTransport do
     )
   end
   let(:logger) { Logger.new(nil) }
-  let(:transport) { described_class.new(app, server, logger: logger, localhost_only: localhost_only) }
+  # require_sse_session: false because these tests exercise routing, origins and tool
+  # dispatching — not SSE session semantics (tested separately in rack_transport_sse_sessions_spec).
+  let(:transport) { described_class.new(app, server, logger: logger, localhost_only: localhost_only, require_sse_session: false) }
   let(:localhost_only) { true }
 
   describe '#initialize' do
@@ -193,7 +195,8 @@ RSpec.describe FastMcp::Transports::RackTransport do
           logger: logger,
           allowed_origins: allowed_origins,
           localhost_only: true,
-          allowed_ips: ['127.0.0.1', '192.168.0.1']
+          allowed_ips: ['127.0.0.1', '192.168.0.1'],
+          require_sse_session: false
         )
       end
 
@@ -346,7 +349,8 @@ RSpec.describe FastMcp::Transports::RackTransport do
       end
 
       it 'enforces loopback defaults when localhost_only is true and no list is supplied' do
-        local_transport = described_class.new(app, server, logger: logger, localhost_only: true)
+        local_transport = described_class.new(app, server, logger: logger, localhost_only: true,
+                                              require_sse_session: false)
 
         expect(local_transport.call(message_env('203.0.113.7')).first).to eq(403)
         expect(local_transport.call(message_env('127.0.0.1')).first).to eq(200)
@@ -357,7 +361,8 @@ RSpec.describe FastMcp::Transports::RackTransport do
           app,
           server,
           logger: logger,
-          localhost_only: false
+          localhost_only: false,
+          require_sse_session: false
         )
 
         expect(open_transport.call(message_env('203.0.113.7')).first).to eq(200)
@@ -369,7 +374,8 @@ RSpec.describe FastMcp::Transports::RackTransport do
           server,
           logger: logger,
           localhost_only: false,
-          allowed_ips: ['127.0.0.1']
+          allowed_ips: ['127.0.0.1'],
+          require_sse_session: false
         )
 
         expect(restricted_transport.call(message_env('203.0.113.7')).first).to eq(403)
@@ -382,7 +388,8 @@ RSpec.describe FastMcp::Transports::RackTransport do
           server,
           logger: logger,
           localhost_only: false,
-          allowed_ips: ['192.168.0.0/16']
+          allowed_ips: ['192.168.0.0/16'],
+          require_sse_session: false
         )
 
         expect(restricted_transport.call(message_env('192.168.1.25')).first).to eq(200)

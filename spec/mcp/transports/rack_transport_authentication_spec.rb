@@ -7,7 +7,8 @@ RSpec.describe 'FastMcp::Transports::RackTransport with authentication' do
   let(:app) { ->(_env) { [200, { 'Content-Type' => 'text/plain' }, ['downstream']] } }
   let(:authenticator) { FastMcp::Authentication::TokenAuthenticator.new(token: 's3cret', principal: :owner) }
   let(:transport) do
-    FastMcp::Transports::RackTransport.new(app, server, authenticator: authenticator, localhost_only: false)
+    FastMcp::Transports::RackTransport.new(app, server, authenticator: authenticator,
+                                           localhost_only: false, require_sse_session: false)
   end
 
   # Reports whichever principal the transport put in the request context, so we can prove it
@@ -83,7 +84,7 @@ RSpec.describe 'FastMcp::Transports::RackTransport with authentication' do
   end
 
   describe 'when no authenticator is configured' do
-    let(:transport) { FastMcp::Transports::RackTransport.new(app, server, localhost_only: false) }
+    let(:transport) { FastMcp::Transports::RackTransport.new(app, server, localhost_only: false, require_sse_session: false) }
 
     it 'admits the request, and the context carries no principal' do
       expect(post_mcp.first).to eq(200)
@@ -112,7 +113,7 @@ RSpec.describe 'FastMcp::Transports::RackTransport with authentication' do
       status, headers, = preflight
 
       expect(status).to eq(200)
-      expect(headers['Access-Control-Allow-Origin']).to eq('*')
+      expect(headers['Access-Control-Allow-Origin']).to eq('http://localhost')
     end
 
     it 'advertises the methods and headers a real request needs' do

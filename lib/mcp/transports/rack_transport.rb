@@ -19,22 +19,29 @@ module FastMcp
       # Request headers a browser is allowed to send to an MCP endpoint.
       DEFAULT_CORS_ALLOWED_HEADERS = %w[Content-Type Authorization].freeze
 
+      # Base SSE headers without CORS origin (set per-response to reflect the allowed origin).
       SSE_HEADERS = {
         'Content-Type' => 'text/event-stream',
         'Cache-Control' => 'no-cache, no-store, must-revalidate',
         'Connection' => 'keep-alive',
         'X-Accel-Buffering' => 'no', # For Nginx
-        'Access-Control-Allow-Origin' => '*', # Allow CORS
         'Access-Control-Allow-Methods' => 'GET, POST, OPTIONS',
-        'Access-Control-Allow-Headers' => 'Content-Type, Authorization',
+        'Access-Control-Allow-Headers' => 'Content-Type, Authorization, MCP-Protocol-Version',
+        'Access-Control-Expose-Headers' => 'Mcp-Session-Id, MCP-Protocol-Version',
         'Access-Control-Max-Age' => '86400', # 24 hours
         'Keep-Alive' => 'timeout=600', # 10 minutes timeout
         'Pragma' => 'no-cache',
         'Expires' => '0'
       }.freeze
 
+      # Default body size limit (4 MiB), matching the v2.0.0 Everything server and the TS SDK.
+      DEFAULT_MAX_REQUEST_BYTES = 4 * 1024 * 1024
+
+      # Default idle SSE timeout (30 minutes).
+      DEFAULT_SSE_IDLE_TIMEOUT = 30 * 60
+
       attr_reader :app, :path_prefix, :sse_clients, :messages_route, :sse_route, :allowed_origins, :localhost_only,
-                  :allowed_ips
+                  :allowed_ips, :max_request_bytes, :cors_allowed_origins
 
       def initialize(app, server, options = {})
         super(server, logger: options[:logger])
@@ -43,6 +50,7 @@ module FastMcp
         @messages_route = options[:messages_route] || 'messages'
         @sse_route = options[:sse_route] || 'sse'
         @allowed_origins = options[:allowed_origins] || DEFAULT_ALLOWED_ORIGINS
+        @cors_allowed_origins = options[:cors_allowed_origins] || @allowed_origins
         @localhost_only = options.fetch(:localhost_only, true) # Default to localhost-only mode
         @allowed_ips_explicit = options.key?(:allowed_ips)
         @allowed_ips = resolved_allowed_ips(options)
@@ -52,6 +60,12 @@ module FastMcp
         @sse_clients = Concurrent::Hash.new
         @sse_clients_mutex = Mutex.new
         @running = false
+        # §1.2: request body limit
+        @max_request_bytes = options.fetch(:max_request_bytes, DEFAULT_MAX_REQUEST_BYTES)
+        # §1.4: SSE session enforcement options
+        @require_sse_session = options.fetch(:require_sse_session, true)
+        @allow_sse_reconnect_takeover = options.fetch(:allow_sse_reconnect_takeover, false)
+        @sse_idle_timeout = options.fetch(:sse_idle_timeout, DEFAULT_SSE_IDLE_TIMEOUT)
       end
 
       # Start the transport
@@ -77,7 +91,7 @@ module FastMcp
         end
       end
 
-      # Send a message to all connected SSE clients
+      # Send a message to all connected SSE clients (broadcasts; used for list-change notifications)
       def send_message(message)
         json_message = message.is_a?(String) ? message : JSON.generate(message)
         @logger.debug("Broadcasting message to #{@sse_clients.size} SSE clients: #{json_message}")
@@ -108,6 +122,30 @@ module FastMcp
         clients_to_remove.each { |client_id| unregister_sse_client(client_id) }
       end
 
+      # Send a message to a single SSE client by its session key (§1.3 targeted notifications).
+      def send_message_to(client_id, message)
+        json_message = message.is_a?(String) ? message : JSON.generate(message)
+        client = @sse_clients_mutex.synchronize { @sse_clients[client_id] }
+        return unless client
+
+        stream = client[:stream]
+        mutex  = client[:mutex]
+        return if stream.nil? || (stream.respond_to?(:closed?) && stream.closed?) || mutex.nil?
+
+        begin
+          mutex.synchronize do
+            stream.write("data: #{json_message}\n\n")
+            stream.flush if stream.respond_to?(:flush)
+          end
+        rescue Errno::EPIPE, IOError => e
+          @logger.info("Client #{client_id} disconnected during targeted send: #{e.message}")
+          unregister_sse_client(client_id)
+        rescue StandardError => e
+          @logger.error("Error sending to client #{client_id}: #{e.message}")
+          unregister_sse_client(client_id)
+        end
+      end
+
       # Register a new SSE client
       def register_sse_client(client_id, stream, mutex = nil)
         @sse_clients_mutex.synchronize do
@@ -116,12 +154,13 @@ module FastMcp
         end
       end
 
-      # Unregister an SSE client
+      # Unregister an SSE client and remove its resource subscriptions (§1.3).
       def unregister_sse_client(client_id)
         @sse_clients_mutex.synchronize do
           @logger.info("Unregistering SSE client: #{client_id}")
           @sse_clients.delete(client_id)
         end
+        @server.remove_subscriber(client_id) if @server.respond_to?(:remove_subscriber)
       end
 
       # Rack call method
@@ -261,7 +300,7 @@ module FastMcp
         # Answer the CORS preflight before authenticating. A browser never attaches credentials to
         # a preflight, so checking auth first would make an authenticated transport unreachable
         # from a browser: the preflight would 401 and the real request would never be sent.
-        return [200, setup_cors_headers, []] if request.options?
+        return [200, setup_cors_headers(env['HTTP_ORIGIN']), []] if request.options?
 
         # Authenticate, and remember who for the rest of the request
         return unauthorized_response unless resolve_principal(request, env)
@@ -324,32 +363,38 @@ module FastMcp
          )]]
       end
 
-      # Handle SSE connection request
+      # Handle SSE connection request (§1.4 session semantics)
       def handle_sse_request(request, env)
-        # Handle OPTIONS preflight request
-        return [200, setup_cors_headers, []] if request.options?
-
+        return [200, setup_cors_headers(env['HTTP_ORIGIN']), []] if request.options?
         return method_not_allowed_response unless request.get?
 
-        # Handle streaming based on the framework
-        handle_streaming(env)
+        client_id = extract_client_id(env)
+
+        if @require_sse_session && @sse_clients.key?(client_id)
+          # §1.4: a duplicate GET with a known id is a conflict, not a takeover.
+          if @allow_sse_reconnect_takeover
+            handle_client_reconnection(client_id, 'reconnect')
+          else
+            @logger.warn("Duplicate SSE GET for client #{client_id}: returning 409")
+            return json_rpc_error_response(409, -32_000, 'SSE session conflict: already connected', nil)
+          end
+        end
+
+        handle_streaming(env, client_id)
       end
 
       # Handle streaming based on the framework
-      def handle_streaming(env)
+      def handle_streaming(env, client_id = nil)
         @logger.info("Handling streaming for env: #{env['HTTP_USER_AGENT']}")
         if env['rack.hijack']
-          # Rack hijacking (e.g., Puma)
           @logger.info('Handling rack hijack SSE')
-          handle_rack_hijack_sse(env)
+          handle_rack_hijack_sse(env, client_id)
         elsif rails_live_streaming?(env)
-          # Rails ActionController::Live
           @logger.info('Handling rails live streaming SSE')
-          handle_rails_sse(env)
+          handle_rails_sse(env, client_id)
         else
-          # Fallback for servers that don't support streaming
           @logger.info('Falling back to default SSE')
-          [200, SSE_HEADERS.dup, [":ok\n\n"]]
+          [200, sse_response_headers(env['HTTP_ORIGIN']), [":ok\n\n"]]
         end
       end
 
@@ -360,15 +405,36 @@ module FastMcp
           env['action_controller.instance'].response.respond_to?(:stream)
       end
 
-      # Set up CORS headers for preflight requests
-      def setup_cors_headers
-        {
-          'Access-Control-Allow-Origin' => '*',
+      # Set up CORS headers for a preflight or SSE response (§1.5 CORS allowlist).
+      # Reflects the request's Origin when it is on the allowed list; otherwise omits the header
+      # so the browser blocks the request. Always emits +Vary: Origin+.
+      #
+      # @param origin [String, nil] the value of the request's Origin header
+      def setup_cors_headers(origin = nil)
+        headers = {
           'Access-Control-Allow-Methods' => 'GET, POST, OPTIONS',
           'Access-Control-Allow-Headers' => cors_allowed_headers.join(', '),
-          'Access-Control-Max-Age' => '86400', # 24 hours
+          'Access-Control-Expose-Headers' => 'Mcp-Session-Id, MCP-Protocol-Version',
+          'Access-Control-Max-Age' => '86400',
+          'Vary' => 'Origin',
           'Content-Type' => 'text/plain'
         }
+        reflected = allowed_cors_origin(origin)
+        headers['Access-Control-Allow-Origin'] = reflected if reflected
+        headers
+      end
+
+      # Returns the origin string to reflect when it is allowed, or nil when it is not.
+      def allowed_cors_origin(origin)
+        return nil if origin.nil? || origin.empty?
+
+        hostname = extract_hostname(origin)
+        return nil unless hostname
+
+        allowed = @cors_allowed_origins.any? do |o|
+          o.is_a?(Regexp) ? hostname.match?(o) : hostname == o
+        end
+        allowed ? origin : nil
       end
 
       # Headers a browser may send on an MCP request. Authorization is included by default
@@ -377,31 +443,23 @@ module FastMcp
       #
       # @return [Array<String>]
       def cors_allowed_headers
-        @cors_allowed_headers.uniq
+        (@cors_allowed_headers + %w[MCP-Protocol-Version]).uniq
       end
 
-      # Extract client ID from request or generate a new one
+      # Extract client ID from request or generate a new one.
+      # Reconnection takeover (closing the old stream) happens in handle_sse_request, not here,
+      # so that the 409 path can reject without ever touching the existing stream.
       def extract_client_id(env)
         request = Rack::Request.new(env)
 
-        # Check various places for client ID
         client_id = request.params['client_id']
         client_id ||= env['HTTP_LAST_EVENT_ID']
         client_id ||= env['HTTP_X_CLIENT_ID']
+        client_id ||= SecureRandom.uuid
 
-        # Get browser information
         user_agent = env['HTTP_USER_AGENT'] || ''
         browser_type = detect_browser_type(user_agent)
-        @logger.info("Client connection from: #{user_agent} (#{browser_type})")
-
-        # Handle reconnection
-        if client_id && @sse_clients.key?(client_id)
-          handle_client_reconnection(client_id, browser_type)
-        else
-          # Generate a new client ID if none was provided
-          client_id ||= SecureRandom.uuid
-          @logger.info("New client connection: #{client_id} (#{browser_type})")
-        end
+        @logger.info("Client connection from #{browser_type}: #{client_id}")
 
         client_id
       end
@@ -442,8 +500,8 @@ module FastMcp
       end
 
       # Handle SSE with Rack hijacking (e.g., Puma)
-      def handle_rack_hijack_sse(env)
-        client_id = extract_client_id(env)
+      def handle_rack_hijack_sse(env, client_id = nil)
+        client_id ||= extract_client_id(env)
         @logger.debug("Setting up Rack hijack SSE connection for client #{client_id}")
 
         env['rack.hijack'].call
@@ -453,21 +511,18 @@ module FastMcp
         setup_sse_connection(client_id, io, env)
         start_keep_alive_thread(client_id, io)
 
-        # Return async response
         [-1, {}, []]
       end
 
       # Set up the SSE connection
       def setup_sse_connection(client_id, io, env)
-        # Handle for reconnection, if the client_id is already registered we reuse the mutex
-        # If not a reconnection, generate a new mutex used in registration
         client = @sse_clients[client_id]
         mutex = client ? client[:mutex] : Mutex.new
-        # Send headers
         @logger.debug("Sending HTTP headers for SSE connection #{client_id}")
+        cors_origin = env['HTTP_ORIGIN']
         mutex.synchronize do
           io.write("HTTP/1.1 200 OK\r\n")
-          SSE_HEADERS.each { |k, v| io.write("#{k}: #{v}\r\n") }
+          sse_response_headers(cors_origin).each { |k, v| io.write("#{k}: #{v}\r\n") }
           io.write("\r\n")
           io.flush
         end
@@ -512,19 +567,31 @@ module FastMcp
         end
       end
 
-      # Run the keep-alive loop
+      # Run the keep-alive loop; exits when the client disconnects or idles past @sse_idle_timeout.
       def keep_alive_loop(io, client_id)
         @logger.info("Starting keep-alive loop for SSE connection #{client_id}")
         ping_count = 0
-        ping_interval = 1 # Send a ping every 1 second
+        ping_interval = 1
         @running = true
         mutex = @sse_clients[client_id] && @sse_clients[client_id][:mutex]
         while @running && !io.closed?
+          # §1.4 idle reaping: disconnect when no ping activity within the timeout window.
+          client = @sse_clients[client_id]
+          if client && @sse_idle_timeout
+            idle_since = client[:last_active_at] || client[:connected_at]
+            if idle_since && (Time.now - idle_since) > @sse_idle_timeout
+              @logger.info("SSE client #{client_id} idle for #{@sse_idle_timeout}s, closing")
+              break
+            end
+          end
+
           begin
-            mutex.synchronize { ping_count = send_keep_alive_ping(io, client_id, ping_count) }
+            mutex&.synchronize { ping_count = send_keep_alive_ping(io, client_id, ping_count) }
+            @sse_clients_mutex.synchronize do
+              @sse_clients[client_id][:last_active_at] = Time.now if @sse_clients[client_id]
+            end
             sleep ping_interval
           rescue Errno::EPIPE, IOError => e
-            # Broken pipe or IO error - client disconnected
             @logger.error("SSE connection error for client #{client_id}: #{e.message}")
             break
           end
@@ -575,25 +642,37 @@ module FastMcp
       end
 
       # Handle SSE with Rails ActionController::Live
-      def handle_rails_sse(env)
-        client_id = extract_client_id(env)
+      def handle_rails_sse(env, client_id = nil)
+        client_id ||= extract_client_id(env)
         controller = env['action_controller.instance']
         stream = controller.response.stream
 
-        # Register client
         register_sse_client(client_id, stream)
-
-        # The controller will handle the streaming
-        [200, SSE_HEADERS, []]
+        [200, sse_response_headers(env['HTTP_ORIGIN']), []]
       end
 
-      # Handle message POST request with specific server
+      # Handle message POST request with specific server (§1.2 body limit, §1.4 session check)
       def handle_message_request_with_server(request, server)
         @logger.debug('Received message request')
         return method_not_allowed_response unless request.post?
 
+        if @require_sse_session
+          session_id = request.params['sessionId'] || request.env['HTTP_X_SESSION_ID']
+          unless session_id
+            return json_rpc_error_response(400, -32_600, 'Missing sessionId: connect via /sse first', nil)
+          end
+
+          unless @sse_clients.key?(session_id)
+            # Best-effort: try to echo the request id for a parseable body
+            request_id = extract_json_id(request)
+            return json_rpc_error_response(404, -32_001, 'Session not found', request_id)
+          end
+        end
+
         begin
           process_json_request_with_server(request, server)
+        rescue PayloadTooLarge
+          json_rpc_error_response(413, -32_600, "Request body too large (limit #{@max_request_bytes} bytes)", nil)
         rescue JSON::ParserError => e
           handle_parse_error(e)
         rescue StandardError => e
@@ -602,15 +681,12 @@ module FastMcp
       end
 
       def process_json_request_with_server(request, server)
-        # Parse the request body
-        body = request.body.read
+        body = read_limited_body(request)
         @logger.debug("Request body: #{body}")
 
-        # Extract headers that might be relevant
         headers = request.env.select { |k, _v| k.start_with?('HTTP_') }
                          .transform_keys { |k| k.sub('HTTP_', '').downcase.tr('_', '-') }
 
-        # Let the specific server handle the JSON request directly
         response =
           if server.respond_to?(:with_request_context)
             server.with_request_context(transport: self, **request_context_for(request)) do
@@ -621,7 +697,6 @@ module FastMcp
           end
         response ||= []
 
-        # Return the JSON response
         [200, { 'Content-Type' => 'application/json' }, response]
       end
 
@@ -645,6 +720,45 @@ module FastMcp
       def handle_internal_error(error)
         @logger.error("Error processing message: #{error.message}")
         json_rpc_error_response(500, -32_603, "Internal error: #{error.message}")
+      end
+
+      # Raised by read_limited_body when the request exceeds @max_request_bytes.
+      class PayloadTooLarge < StandardError; end
+
+      # Reads the request body up to @max_request_bytes, raising PayloadTooLarge if exceeded.
+      # nil max means unlimited (useful for tests that want to skip the guard).
+      def read_limited_body(request)
+        limit = @max_request_bytes
+        return request.body.read if limit.nil?
+
+        content_length = request.env['CONTENT_LENGTH']
+        raise PayloadTooLarge if content_length && content_length.to_i > limit
+
+        body = request.body.read(limit + 1) || ''
+        raise PayloadTooLarge if body.bytesize > limit
+
+        body
+      end
+
+      # Returns SSE-compatible response headers with a per-request CORS origin when allowed.
+      def sse_response_headers(origin = nil)
+        headers = SSE_HEADERS.dup
+        reflected = allowed_cors_origin(origin)
+        if reflected
+          headers['Access-Control-Allow-Origin'] = reflected
+          headers['Vary'] = 'Origin'
+        end
+        headers
+      end
+
+      # Attempts to parse the JSON body to extract a request id for error responses.
+      # Returns nil on any failure (the request body may be malformed).
+      def extract_json_id(request)
+        body = request.body.read
+        request.body.rewind
+        JSON.parse(body)['id']
+      rescue StandardError
+        nil
       end
 
       def json_rpc_error_response(http_status, code, message, id = nil)

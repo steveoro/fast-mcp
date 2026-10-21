@@ -4,6 +4,16 @@ require_relative 'rack_transport'
 
 module FastMcp
   module Transports
+    # Extends RackTransport with static bearer-token authentication and reserved hooks for
+    # future OAuth 2.1 / RFC 7662 token verification (§1.7, currently not implemented).
+    #
+    # OAuth hooks (not implemented):
+    #   token_verifier:  a duck type that responds to #call(token) and returns a hash with
+    #                    { subject:, scopes: [], expires_at:, resource: } or nil on failure.
+    #   required_scopes: an Array<String> of scopes the token must carry.
+    #
+    # These options are accepted but ignored until an implementer enables them. The design matches
+    # the Ruby SDK 1.8.0 OAuth additions (iss+aud required, alg:none refused, no HMAC/RSA mixing).
     class AuthenticatedRackTransport < RackTransport
       def initialize(app, server, options = {})
         super
@@ -12,6 +22,9 @@ module FastMcp
         @auth_header_name = options[:auth_header_name] || 'Authorization'
         @auth_exempt_paths = options[:auth_exempt_paths] || []
         @auth_enabled = !@auth_token.nil?
+        # token_verifier / required_scopes: reserved, not implemented.
+        @token_verifier  = options[:token_verifier]
+        @required_scopes = Array(options[:required_scopes])
         # A browser preflight has to be told it may send whichever header carries the credential.
         @cors_allowed_headers += [@auth_header_name]
       end

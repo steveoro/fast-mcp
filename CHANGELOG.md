@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.0] - 2026-10-21
+
+### Added
+
+- Handshake version negotiation: `HANDSHAKE_PROTOCOL_VERSIONS = %w[2025-11-25 2025-06-18 2025-03-26 2024-11-05]`; `initialize` echoes a supported requested version, otherwise answers the newest (never `2026-07-28`, which has no handshake). `Server.new(protocol_versions: [...])` to cap the list.
+- `Server#negotiate_protocol_version`, `#supported_protocol_version?`, `#negotiated_protocol_version` (attr_reader).
+- `max_request_bytes` option on `RackTransport` (default 4 MiB → HTTP 413 with `-32600`); same line-length cap on `StdioTransport` (`max_request_bytes:` → `-32600` + drain; next line still processed).
+- Per-session resource subscriptions keyed by session id (`@resource_subscriptions` + `@subscriptions_mutex`); `Server#remove_subscriber(session_key)` returns the count of URIs touched.
+- `Transport#send_message_to(client_id, message)` on `RackTransport` for targeted per-session notifications.
+- `cors_allowed_origins:` option on `RackTransport`; preflight reflects the allowed `Origin` header, adds `Vary: Origin`; `MCP-Protocol-Version` added to `Access-Control-Allow-Headers` and `Access-Control-Expose-Headers`.
+- `require_sse_session:` (default `true`), `allow_sse_reconnect_takeover:` (default `false`), and `sse_idle_timeout:` (default 30 min) options on `RackTransport` for hardened legacy SSE session semantics.
+- `expose_internal_errors:` option on `Server` (default `false`); when `false`, exception messages are never forwarded to the client.
+- `input:` / `output:` IO options on `StdioTransport` (default `$stdin` / `$stdout`) so that Rails log lines never contaminate the JSON stream.
+- Reserved `token_verifier:` and `required_scopes:` hooks on `AuthenticatedRackTransport` (OAuth 2.1 duck-type interface; **not implemented** — see docs).
+
+### Changed (behaviour)
+
+- **Strict JSON-RPC 2.0:** parse errors return `-32700` (was `-32600`); a non-object/array/primitive body returns `-32600` ("JSON-RPC batching is not supported" for arrays); internal errors return `-32603` with the message hidden unless `expose_internal_errors: true`; notifications are **never answered**.
+- **Legacy SSE sessions:** a `POST /messages` without a `sessionId` param returns `400 -32600`; an unknown `sessionId` returns `404 -32001` (echoing the JSON-RPC id); a duplicate `GET /sse` with a connected id returns `409 -32000` instead of taking over the stream; idle SSE clients are reaped after `sse_idle_timeout`.
+- `unregister_sse_client` / `cleanup_sse_connection` now call `server.remove_subscriber(client_id)` to keep resource-subscription state consistent.
+
+### Fixed
+
+- `resources/unsubscribe` never actually removed subscriptions (was keyed by request id, now keyed by session id, matching subscribe).
+- Unknown notifications (e.g. `notifications/cancelled`) got a `-32601` reply with `id: null`; they are now silently dropped.
+
 ## [1.7.1] - 2026-09-22
 
 ### Added
