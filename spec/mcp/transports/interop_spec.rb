@@ -2,10 +2,10 @@
 
 # §1.9 interop spec — tagged :interop, skipped when the mcp gem is unavailable.
 #
-# Tests the Ruby SDK 1.8.0 client in :auto and :legacy modes against the synthetic
-# stdio server in examples/server_with_stdio_transport.rb.  The probe in :auto mode
-# spawns a throwaway sibling process (negotiateStdioViaSibling) and should fall back
-# to the newest handshake version (2025-11-25) via the server/discover → -32601 path.
+# Runs the official Ruby SDK client (mcp ~> 1.8) in :auto and :legacy modes against
+# the synthetic stdio server in examples/server_with_stdio_transport.rb. In :auto mode
+# the client probes server/discover first; fast-mcp answers -32601, so the client
+# falls back to the initialize handshake and negotiates the newest handshake version.
 
 begin
   require 'mcp'
@@ -14,47 +14,36 @@ rescue LoadError
   MCP_AVAILABLE = false
 end
 
-RSpec.describe 'Ruby SDK 1.8.0 interop (§1.9)', :interop, skip: !MCP_AVAILABLE do
+RSpec.describe 'Ruby SDK interop (§1.9)', :interop, skip: !MCP_AVAILABLE do
   let(:server_script) do
-    File.expand_path('../../../../examples/server_with_stdio_transport.rb', __dir__)
+    File.expand_path('../../../examples/server_with_stdio_transport.rb', __dir__)
   end
 
-  around do |example|
-    skip 'examples/server_with_stdio_transport.rb not found' unless File.exist?(server_script)
-    example.run
+  # Starts the example server through the SDK's stdio transport and connects in `mode`.
+  def connected_client(mode)
+    transport = ::MCP::Client::Stdio.new(command: RbConfig.ruby, args: [server_script], read_timeout: 15)
+    client = ::MCP::Client.new(transport: transport)
+    client.connect(mode: mode, client_info: { name: 'fast-mcp-interop-spec', version: FastMcp::VERSION })
+    client
   end
 
-  # Shared helper: build a client command pointing at the stdio server.
-  def client_command
-    ["ruby", server_script]
+  it 'finds the example server' do
+    expect(File).to exist(server_script)
   end
 
-  shared_examples 'a connected MCP client' do |mode|
-    it "connects and lists tools in #{mode} mode" do
-      client = ::MCP::Client.new(command: client_command, mode: mode)
-      begin
-        tools = client.tools
-        expect(tools).to be_an(Array)
-        expect(tools).not_to be_empty
-      ensure
-        client.close rescue nil # rubocop:disable Style/RescueModifier
+  %i[auto legacy].each do |mode|
+    context "in #{mode} mode" do
+      let!(:client) { connected_client(mode) }
+
+      after { client.transport.close }
+
+      it 'negotiates the newest handshake version' do
+        expect(client.protocol_version).to eq(FastMcp::Server::HANDSHAKE_PROTOCOL_VERSIONS.first)
       end
-    end
 
-    it "negotiates a supported protocol version in #{mode} mode" do
-      client = ::MCP::Client.new(command: client_command, mode: mode)
-      begin
-        version = client.negotiated_protocol_version rescue client.server_info&.dig(:protocolVersion) # rubocop:disable Style/RescueModifier
-        if version
-          supported = FastMcp::Server::HANDSHAKE_PROTOCOL_VERSIONS
-          expect(supported).to include(version), "#{version} not in #{supported}"
-        end
-      ensure
-        client.close rescue nil # rubocop:disable Style/RescueModifier
+      it 'lists the example tools' do
+        expect(client.tools.map(&:name)).to include('add_user', 'delete_user')
       end
     end
   end
-
-  include_examples 'a connected MCP client', :auto
-  include_examples 'a connected MCP client', :legacy
 end
