@@ -580,15 +580,18 @@ module FastMcp
         client[:last_active_at] || client[:connected_at]
       end
 
-      # Closes the stream of a client already removed from @sse_clients, under its write mutex,
-      # and drops its resource subscriptions.
+      # Closes the stream of a client already removed from @sse_clients and drops its resource
+      # subscriptions. It takes the write mutex only if it's free: a writer stuck on a dead socket
+      # would otherwise block this (request) thread, and closing interrupts that writer with an
+      # IOError, which every send path rescues.
       def close_removed_sse_client(client_id, client)
         stream = client[:stream]
-        close = -> { stream.close if stream.respond_to?(:close) && !(stream.respond_to?(:closed?) && stream.closed?) }
-        client[:mutex] ? client[:mutex].synchronize(&close) : close.call
+        locked = client[:mutex]&.try_lock
+        stream.close if stream.respond_to?(:close) && !(stream.respond_to?(:closed?) && stream.closed?)
       rescue StandardError => e
         @logger.error("Error closing idle SSE client #{client_id}: #{e.message}")
       ensure
+        client[:mutex].unlock if locked
         @server.remove_subscriber(client_id) if @server.respond_to?(:remove_subscriber)
       end
 
