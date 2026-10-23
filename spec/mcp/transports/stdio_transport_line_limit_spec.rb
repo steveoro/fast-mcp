@@ -146,6 +146,15 @@ RSpec.describe FastMcp::Transports::StdioTransport, 'line length cap (§1.2/§1.
       expect(messages_from(output)).to be_empty
     end
 
+    it 'rejects and drains a CRLF frame whose content is exactly the limit' do
+      frame = JSON.generate(jsonrpc: '2.0', id: 1, method: 'ping')
+      transport_obj, output = make_transport("#{frame}\r\n", limit: frame.bytesize)
+      transport_obj.start
+
+      expect(server).not_to have_received(:handle_request)
+      expect(messages_from(output).map { |m| m.dig('error', 'code') }).to eq([-32_600])
+    end
+
     it 'drains an over-limit line in bounded reads' do
       limit = 64
       input = StringIO.new("#{'x' * 10_000}\n#{JSON.generate(jsonrpc: '2.0', id: 2, method: 'ping')}\n")
