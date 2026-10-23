@@ -16,6 +16,7 @@ RSpec.describe FastMcp::Transports::AuthenticatedRackTransport do
   let(:auth_header_name) { 'Authorization' }
   let(:auth_exempt_paths) { ['/public', '/mcp/health'] }
 
+  # require_sse_session: false — these tests exercise auth, not SSE session semantics.
   let(:transport) do
     described_class.new(
       app,
@@ -23,7 +24,8 @@ RSpec.describe FastMcp::Transports::AuthenticatedRackTransport do
       logger: logger,
       auth_token: auth_token,
       auth_header_name: auth_header_name,
-      auth_exempt_paths: auth_exempt_paths
+      auth_exempt_paths: auth_exempt_paths,
+      require_sse_session: false
     )
   end
 
@@ -293,7 +295,8 @@ RSpec.describe FastMcp::Transports::AuthenticatedRackTransport do
           server,
           logger: logger,
           auth_token: auth_token,
-          allowed_origins: allowed_origins
+          allowed_origins: allowed_origins,
+          require_sse_session: false
         )
       end
 
@@ -369,6 +372,18 @@ RSpec.describe FastMcp::Transports::AuthenticatedRackTransport do
         response = JSON.parse(result[2].first)
         expect(response['error']['message']).to include('Unauthorized')
       end
+    end
+  end
+
+  describe 'reserved OAuth options (PR #4 review)' do
+    it 'refuses token_verifier: instead of silently running unauthenticated' do
+      expect { described_class.new(app, server, logger: logger, token_verifier: ->(_token) {}) }
+        .to raise_error(ArgumentError, /reserved and not implemented/)
+    end
+
+    it 'refuses required_scopes:' do
+      expect { described_class.new(app, server, logger: logger, auth_token: 't', required_scopes: %w[read]) }
+        .to raise_error(ArgumentError, /reserved and not implemented/)
     end
   end
 end

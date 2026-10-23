@@ -266,14 +266,14 @@ RSpec.describe 'MCP Server Integration' do
     end
 
     it 'handles errors for invalid JSON requests' do
-      request = 1 # Invalid JSON
+      request = 1 # Invalid JSON (raises TypeError in JSON.parse, treated as parse error)
       io_response = server.handle_request(request)
 
       io_response.rewind
       io_as_json = JSON.parse(io_response.read)
       expect(io_as_json['jsonrpc']).to eq('2.0')
-      expect(io_as_json['error']['code']).to eq(-32_600)
-      expect(io_as_json['error']['message']).to eq('Invalid Request')
+      expect(io_as_json['error']['code']).to eq(-32_700)
+      expect(io_as_json['error']['message']).to include('Parse error')
       expect(io_as_json['id']).to eq(nil)
     end
 

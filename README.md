@@ -26,16 +26,37 @@ Fast MCP solves all these problems by providing a clean, Ruby-focused implementa
 
 ## Installation
 
-This maintained fork is distributed from GitHub rather than RubyGems:
+This maintained fork (`steveoro/fast-mcp`, forked from `yjacquin/fast-mcp`) is distributed from GitHub rather than RubyGems:
 
 ```ruby
 gem 'fast-mcp',
     git: 'https://github.com/steveoro/fast-mcp.git',
-    tag: 'v1.7.0'
+    tag: 'v1.8.0'
 ```
 
 The gem name, `require 'fast_mcp'`, and the `FastMcp` module remain compatible
 with the original project.
+
+### Protocol version support
+
+`FastMcp::Server` advertises the following handshake-era versions (newest first):
+
+```
+2025-11-25  2025-06-18  2025-03-26  2024-11-05
+```
+
+`initialize` echoes a supported requested version; anything else (garbage, `nil`, or a
+modern `2026-07-28`+ value) gets the newest version (`2025-11-25`). The modern era
+(`2026-07-28`, no handshake) is **not served yet** — a `server/discover` probe
+returns `-32601`, and SDK clients in `auto` mode fall back to the legacy path
+automatically.
+
+To cap the list (e.g. to two versions):
+
+```ruby
+FastMcp::Server.new(name: 'myapp', version: '1.0',
+                    protocol_versions: %w[2025-03-26 2024-11-05])
+```
 
 ## ✨ Features
 
@@ -427,6 +448,56 @@ FastMcp.rack_middleware(app,
 )
 ```
 
+### New options in 1.8.0
+
+| Option | Transport | Default | Description |
+|---|---|---|---|
+| `protocol_versions:` | `Server.new` | `HANDSHAKE_PROTOCOL_VERSIONS` | Cap the list of advertised handshake versions |
+| `expose_internal_errors:` | `Server.new` | `false` | Forward exception messages to the client in `-32603` responses |
+| `instructions:` | `Server.new` | `nil` | Server instructions sent in the `initialize` result: a String, or a callable taking the request |
+| `max_request_bytes:` | `RackTransport`, `StdioTransport` | `4 * 1024 * 1024` (Rack) / `nil` (stdio, opt-in) | Body/line limit; over-limit → HTTP 413 or `-32600`. Pass it to stdio with `server.start(max_request_bytes: …)` |
+| `cors_allowed_origins:` | `RackTransport` | same as `allowed_origins:` | Origins reflected in `Access-Control-Allow-Origin`; disallowed → no header |
+| `require_sse_session:` | `RackTransport` | `true` | The server issues the session id in the `endpoint` event; every POST must carry it (missing → 400, unknown → 404). Replies go only to that session's stream |
+| `allow_sse_reconnect_takeover:` | `RackTransport` | `false` | Allow a duplicate GET to take over an existing SSE stream |
+| `sse_idle_timeout:` | `RackTransport` | `30 * 60` (30 min) | Close SSE sessions with no POST for this many seconds (the server's own pings don't count) |
+| `input:` / `output:` | `StdioTransport` | `$stdin` / `$stdout` | Redirect IO so that log lines never corrupt the JSON stream |
+| `token_verifier:` / `required_scopes:` | `AuthenticatedRackTransport` | `nil` | **Reserved** — OAuth 2.1 hook, not implemented; raises `ArgumentError` if set |
+
+#### Server instructions
+
+`instructions:` tells clients how to use the server; MCP hosts may show it to the model. Pass a
+String, or an object whose `call(request)` returns a String or nil. `request` is the Rack request
+(nil on stdio), so one server can send different text per endpoint. Blank values are not sent, a
+failing callable is logged and skipped, and no length cap is applied (cap it in your app if your
+clients need one).
+
+```ruby
+server = FastMcp::Server.new(
+  name: 'notes', version: '1.0.0',
+  instructions: ->(request) { request&.path&.end_with?('/readonly') ? READONLY_TEXT : DEFAULT_TEXT }
+)
+```
+
+#### Capabilities you advertise are the ones you serve
+
+`resources/subscribe` and `resources/unsubscribe` answer `-32601` when `capabilities:` sets
+`resources: { subscribe: false }`, and the `list_changed` notifications are skipped when the
+matching `listChanged` is false. Advertise only what your app delivers.
+
+`capabilities:` is merged one level deep: `{ resources: { subscribe: false } }` replaces the whole
+`resources` entry, so it also turns `listChanged` off. Spell out every key you want:
+`{ resources: { subscribe: false, listChanged: false } }`.
+
+#### Notes and limits
+
+- **CORS:** `cors_allowed_origins` can only narrow `allowed_origins`, because a request from an
+  Origin outside `allowed_origins` is refused with 403 before CORS applies. Entries are compared
+  with the Origin's hostname: a `'*'` string matches nothing, and a Regexp should be anchored
+  (`/\A.+\.example\.com\z/`), since an unanchored one matches substrings.
+- **Handshake state is server-wide:** the negotiated protocol version, client capabilities and
+  the initialized flag live on the `Server`, so on Rack the latest client's handshake wins.
+  Use one `Server` per client if you need them per session.
+
 ### Authentication
 
 Fast MCP supports token-based authentication for all connections:
@@ -486,6 +557,23 @@ Please read our [Contributing Guide](CONTRIBUTING.md) for more details.
 ## 📄 License
 
 This project is available as open source under the terms of the [MIT License](https://opensource.org/licenses/MIT).
+
+## Reference implementation
+
+[`steveoro/graph_mem`](https://github.com/steveoro/graph_mem) is the reference consumer of
+fast-mcp 1.8.0. Every new server feature has at least one real use there:
+
+| fast-mcp 1.8.0 feature | graph_mem 1.54.0 usage |
+|---|---|
+| `HANDSHAKE_PROTOCOL_VERSIONS`, `protocol_versions:`, `negotiate_protocol_version` | `lib/graph_mem/mcp_streamable_http_transport.rb#resolve_session`; stdio runner |
+| `supported_protocol_version?` | `MCP-Protocol-Version` header check in the same transport |
+| `StdioTransport` `input:` / `output:` | `bin/mcp_stdio_runner.rb` (clean stdout) |
+| `max_request_bytes`, `cors_allowed_origins`, `require_sse_session`, `allow_sse_reconnect_takeover`, `sse_idle_timeout` | `config/initializers/fast_mcp.rb` legacy `/mcp/sse` options |
+| `send_message_to`, `remove_subscriber` | `McpStreamableHttpTransport#send_message_to`, `close_session` + reaper |
+| Strict JSON-RPC (`-32700/-32600/-32603`, silent notifications), `expose_internal_errors:` | stdio path; mirrored in graph_mem's Streamable HTTP transport |
+| `instructions:` | `config/initializers/fast_mcp.rb` → `GraphMem::McpInstructions.for(profile)` |
+| Capability-gated subscribe / `list_changed` | `capabilities:` override in `config/initializers/fast_mcp.rb` |
+| `token_verifier:` (reserved, not implemented) | Deliberately not used; graph_mem keeps its static bearer + IP policy (`GraphMem::McpAccessPolicy`) |
 
 ## 🙏 Acknowledgments
 

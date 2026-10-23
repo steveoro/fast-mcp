@@ -6,7 +6,7 @@ require 'rack'
 RSpec.describe 'FastMcp::Transports::RackTransport with filtering' do
   let(:server) { FastMcp::Server.new(name: 'test-server', version: '1.0.0', logger: Logger.new(nil)) }
   let(:app) { ->(_env) { [200, { 'Content-Type' => 'text/plain' }, ['OK']] } }
-  let(:transport) { FastMcp::Transports::RackTransport.new(app, server) }
+  let(:transport) { FastMcp::Transports::RackTransport.new(app, server, require_sse_session: false) }
   
   # Define test tools
   let(:admin_tool) do
