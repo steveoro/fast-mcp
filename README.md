@@ -455,13 +455,13 @@ FastMcp.rack_middleware(app,
 | `protocol_versions:` | `Server.new` | `HANDSHAKE_PROTOCOL_VERSIONS` | Cap the list of advertised handshake versions |
 | `expose_internal_errors:` | `Server.new` | `false` | Forward exception messages to the client in `-32603` responses |
 | `instructions:` | `Server.new` | `nil` | Server instructions sent in the `initialize` result: a String, or a callable taking the request |
-| `max_request_bytes:` | `RackTransport`, `StdioTransport` | `4 * 1024 * 1024` (Rack) / `nil` (stdio) | Body/line limit; over-limit → HTTP 413 or `-32600` |
+| `max_request_bytes:` | `RackTransport`, `StdioTransport` | `4 * 1024 * 1024` (Rack) / `nil` (stdio, opt-in) | Body/line limit; over-limit → HTTP 413 or `-32600`. Pass it to stdio with `server.start(max_request_bytes: …)` |
 | `cors_allowed_origins:` | `RackTransport` | same as `allowed_origins:` | Origins reflected in `Access-Control-Allow-Origin`; disallowed → no header |
-| `require_sse_session:` | `RackTransport` | `true` | Require a known `sessionId` on every POST; missing → 400, unknown → 404 |
+| `require_sse_session:` | `RackTransport` | `true` | The server issues the session id in the `endpoint` event; every POST must carry it (missing → 400, unknown → 404). Replies go only to that session's stream |
 | `allow_sse_reconnect_takeover:` | `RackTransport` | `false` | Allow a duplicate GET to take over an existing SSE stream |
-| `sse_idle_timeout:` | `RackTransport` | `30 * 60` (30 min) | Reap idle SSE clients after this many seconds |
+| `sse_idle_timeout:` | `RackTransport` | `30 * 60` (30 min) | Close SSE sessions with no POST for this many seconds (the server's own pings don't count) |
 | `input:` / `output:` | `StdioTransport` | `$stdin` / `$stdout` | Redirect IO so that log lines never corrupt the JSON stream |
-| `token_verifier:` / `required_scopes:` | `AuthenticatedRackTransport` | `nil` | **Reserved** — OAuth 2.1 hook (not implemented; see docs) |
+| `token_verifier:` / `required_scopes:` | `AuthenticatedRackTransport` | `nil` | **Reserved** — OAuth 2.1 hook, not implemented; raises `ArgumentError` if set |
 
 #### Server instructions
 
@@ -483,6 +483,20 @@ server = FastMcp::Server.new(
 `resources/subscribe` and `resources/unsubscribe` answer `-32601` when `capabilities:` sets
 `resources: { subscribe: false }`, and the `list_changed` notifications are skipped when the
 matching `listChanged` is false. Advertise only what your app delivers.
+
+`capabilities:` is merged one level deep: `{ resources: { subscribe: false } }` replaces the whole
+`resources` entry, so it also turns `listChanged` off. Spell out every key you want:
+`{ resources: { subscribe: false, listChanged: false } }`.
+
+#### Notes and limits
+
+- **CORS:** `cors_allowed_origins` can only narrow `allowed_origins`, because a request from an
+  Origin outside `allowed_origins` is refused with 403 before CORS applies. Entries are compared
+  with the Origin's hostname: a `'*'` string matches nothing, and a Regexp should be anchored
+  (`/\A.+\.example\.com\z/`), since an unanchored one matches substrings.
+- **Handshake state is server-wide:** the negotiated protocol version, client capabilities and
+  the initialized flag live on the `Server`, so on Rack the latest client's handshake wins.
+  Use one `Server` per client if you need them per session.
 
 ### Authentication
 
