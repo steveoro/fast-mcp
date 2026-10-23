@@ -35,6 +35,15 @@ module FastMcp
         'Expires' => '0'
       }.freeze
 
+      # Routes a request's replies to the SSE stream of the session that sent it (§1.3/§1.4),
+      # instead of broadcasting them to every connected client.
+      SessionResponder = Struct.new(:transport, :session_id) do
+        # @param message [Hash, String] the JSON-RPC message to deliver
+        def send_message(message)
+          transport.send_message_to(session_id, message)
+        end
+      end
+
       # Default body size limit (4 MiB), matching the v2.0.0 Everything server and the TS SDK.
       DEFAULT_MAX_REQUEST_BYTES = 4 * 1024 * 1024
 
@@ -351,9 +360,10 @@ module FastMcp
         return [200, setup_cors_headers(env['HTTP_ORIGIN']), []] if request.options?
         return method_not_allowed_response unless request.get?
 
+        reap_idle_sse_clients
         client_id = extract_client_id(env)
 
-        if @require_sse_session && @sse_clients.key?(client_id)
+        if @sse_clients.key?(client_id)
           # §1.4: a duplicate GET with a known id is a conflict, not a takeover.
           if @allow_sse_reconnect_takeover
             handle_client_reconnection(client_id, 'reconnect')
@@ -430,14 +440,20 @@ module FastMcp
       end
 
       # Extract client ID from request or generate a new one.
+      # With require_sse_session (the default) the id is always issued by the server (§1.4) and
+      # handed to the client in the endpoint event, so a client can't pick another session's id.
+      # Without it, a client-supplied client_id / Last-Event-ID / X-Client-Id is honoured.
       # Reconnection takeover (closing the old stream) happens in handle_sse_request, not here,
       # so that the 409 path can reject without ever touching the existing stream.
       def extract_client_id(env)
         request = Rack::Request.new(env)
 
-        client_id = request.params['client_id']
-        client_id ||= env['HTTP_LAST_EVENT_ID']
-        client_id ||= env['HTTP_X_CLIENT_ID']
+        client_id = nil
+        unless @require_sse_session
+          client_id = request.params['client_id']
+          client_id ||= env['HTTP_LAST_EVENT_ID']
+          client_id ||= env['HTTP_X_CLIENT_ID']
+        end
         client_id ||= SecureRandom.uuid
 
         user_agent = env['HTTP_USER_AGENT'] || ''
@@ -516,12 +532,8 @@ module FastMcp
         # Send an initial comment to keep the connection alive
         mutex.synchronize { io.write(": SSE connection established\n\n") }
 
-        # Extract query parameters from the request
-        query_string = env['QUERY_STRING']
-
-        # Send endpoint information as the first message with query parameters
-        endpoint = "#{@path_prefix}/#{@messages_route}"
-        endpoint += "?#{query_string}" if query_string
+        # Send endpoint information as the first message; it carries this session's id
+        endpoint = endpoint_url(client_id, env)
         @logger.debug("Sending endpoint information to client #{client_id}: #{endpoint}")
         mutex.synchronize { io.write("event: endpoint\ndata: #{endpoint}\n\n") }
 
@@ -535,6 +547,51 @@ module FastMcp
         @logger.error("Error setting up SSE connection for client #{client_id}: #{e.message}")
         @logger.error(e.backtrace.join("\n")) if e.backtrace
         raise
+      end
+
+      # The messages URL a client must POST to: the GET's query string plus +sessionId+ (§1.4).
+      #
+      # @return [String] e.g. "/mcp/messages?sessionId=<uuid>"
+      def endpoint_url(client_id, env)
+        query = Rack::Utils.parse_query(env['QUERY_STRING'].to_s).merge('sessionId' => client_id)
+        "#{@path_prefix}/#{@messages_route}?#{Rack::Utils.build_query(query)}"
+      end
+
+      # Closes and unregisters SSE clients with no POST activity for +@sse_idle_timeout+ seconds
+      # (§1.4). Runs on every SSE GET and messages POST, so it also covers Rails-live clients,
+      # which have no keep-alive thread. The server's own pings don't count as activity.
+      def reap_idle_sse_clients
+        return unless @sse_idle_timeout
+
+        now = Time.now
+        idle_ids = @sse_clients_mutex.synchronize do
+          @sse_clients.select { |_id, client| now - last_activity(client) > @sse_idle_timeout }.keys
+        end
+        idle_ids.each do |client_id|
+          @logger.info("SSE client #{client_id} idle for more than #{@sse_idle_timeout}s, closing")
+          close_sse_client(client_id)
+        end
+      end
+
+      def last_activity(client)
+        client[:last_active_at] || client[:connected_at]
+      end
+
+      # Closes one client's stream and unregisters it.
+      def close_sse_client(client_id)
+        stream = @sse_clients[client_id]&.fetch(:stream, nil)
+        stream.close if stream.respond_to?(:close) && !(stream.respond_to?(:closed?) && stream.closed?)
+      rescue StandardError => e
+        @logger.error("Error closing idle SSE client #{client_id}: #{e.message}")
+      ensure
+        unregister_sse_client(client_id)
+      end
+
+      # Marks a session as active (a POST arrived for it).
+      def touch_sse_client(client_id)
+        @sse_clients_mutex.synchronize do
+          @sse_clients[client_id][:last_active_at] = Time.now if @sse_clients[client_id]
+        end
       end
 
       # Start a keep-alive thread for SSE connection
@@ -558,7 +615,7 @@ module FastMcp
         @running = true
         mutex = @sse_clients[client_id] && @sse_clients[client_id][:mutex]
         while @running && !io.closed?
-          # §1.4 idle reaping: disconnect when no ping activity within the timeout window.
+          # §1.4 idle reaping: disconnect when no POST activity within the timeout window.
           client = @sse_clients[client_id]
           if client && @sse_idle_timeout
             idle_since = client[:last_active_at] || client[:connected_at]
@@ -570,9 +627,6 @@ module FastMcp
 
           begin
             mutex&.synchronize { ping_count = send_keep_alive_ping(io, client_id, ping_count) }
-            @sse_clients_mutex.synchronize do
-              @sse_clients[client_id][:last_active_at] = Time.now if @sse_clients[client_id]
-            end
             sleep ping_interval
           rescue Errno::EPIPE, IOError => e
             @logger.error("SSE connection error for client #{client_id}: #{e.message}")
@@ -610,8 +664,10 @@ module FastMcp
       # Clean up SSE connection
       def cleanup_sse_connection(client_id, io)
         @logger.info("Cleaning up SSE connection for client #{client_id}")
-        mutex = @sse_clients[client_id] && @sse_clients[client_id][:mutex]
-        unregister_sse_client(client_id)
+        client = @sse_clients[client_id]
+        mutex = client && client[:mutex]
+        # A takeover may already have registered a new stream under this id; leave that one alone.
+        unregister_sse_client(client_id) if client.nil? || client[:stream].equal?(io)
         begin
           if mutex
             mutex.synchronize { io.close unless io.closed? }
@@ -631,6 +687,7 @@ module FastMcp
         stream = controller.response.stream
 
         register_sse_client(client_id, stream)
+        stream.write("event: endpoint\ndata: #{endpoint_url(client_id, env)}\n\n")
         [200, sse_response_headers(env['HTTP_ORIGIN']), []]
       end
 
@@ -639,8 +696,11 @@ module FastMcp
         @logger.debug('Received message request')
         return method_not_allowed_response unless request.post?
 
+        reap_idle_sse_clients
+        # The query string only: request.params would parse (and consume) a POST body sent
+        # without a Content-Type as form data.
+        session_id = request.GET['sessionId'] || request.env['HTTP_X_SESSION_ID']
         if @require_sse_session
-          session_id = request.params['sessionId'] || request.env['HTTP_X_SESSION_ID']
           unless session_id
             return json_rpc_error_response(400, -32_600, 'Missing sessionId: connect via /sse first', nil)
           end
@@ -651,9 +711,11 @@ module FastMcp
             return json_rpc_error_response(404, -32_001, 'Session not found', request_id)
           end
         end
+        session_id = nil unless session_id && @sse_clients.key?(session_id)
+        touch_sse_client(session_id) if session_id
 
         begin
-          process_json_request_with_server(request, server)
+          process_json_request_with_server(request, server, session_id)
         rescue PayloadTooLarge
           json_rpc_error_response(413, -32_600, "Request body too large (limit #{@max_request_bytes} bytes)", nil)
         rescue JSON::ParserError => e
@@ -663,7 +725,9 @@ module FastMcp
         end
       end
 
-      def process_json_request_with_server(request, server)
+      # @param session_id [String, nil] a known SSE session: its replies go to its stream only,
+      #   and it becomes the request's session key (subscriptions, notifications, cleanup)
+      def process_json_request_with_server(request, server, session_id = nil)
         body = read_limited_body(request)
         @logger.debug("Request body: #{body}")
 
@@ -672,7 +736,10 @@ module FastMcp
 
         response =
           if server.respond_to?(:with_request_context)
-            server.with_request_context(transport: self, **request_context_for(request)) do
+            context = request_context_for(request)
+            context[:session_id] = session_id if session_id
+            responder = session_id ? SessionResponder.new(self, session_id) : self
+            server.with_request_context(transport: responder, **context) do
               server.handle_request(body, headers: headers)
             end
           else
@@ -738,7 +805,7 @@ module FastMcp
       # Attempts to parse the JSON body to extract a request id for error responses.
       # Returns nil on any failure (the request body may be malformed).
       def extract_json_id(request)
-        body = request.body.read
+        body = read_limited_body(request)
         request.body.rewind
         JSON.parse(body)['id']
       rescue StandardError

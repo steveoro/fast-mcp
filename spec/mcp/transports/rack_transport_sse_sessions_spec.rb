@@ -88,6 +88,11 @@ RSpec.describe FastMcp::Transports::RackTransport, 'SSE session semantics (§1.4
   # ── Duplicate GET /sse with a connected id → 409 ──────────────────────────
 
   describe 'duplicate GET /sse with a connected id → 409 (§1.4)' do
+    # Client-chosen ids only exist without require_sse_session; with it, the server issues them.
+    let(:transport) do
+      described_class.new(app, server, require_sse_session: false, allow_sse_reconnect_takeover: false,
+                                       logger: logger, localhost_only: false)
+    end
     let(:mock_stream) do
       s = instance_double('IO', closed?: false, close: nil, write: nil, flush: nil)
       allow(s).to receive(:respond_to?).with(:close).and_return(true)
