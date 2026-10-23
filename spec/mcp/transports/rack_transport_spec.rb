@@ -234,8 +234,7 @@ RSpec.describe FastMcp::Transports::RackTransport do
             error: {
               code: -32_600,
               message: 'Forbidden: Origin validation failed'
-            },
-            id: nil
+            }
           })])
       end
 
@@ -271,8 +270,7 @@ RSpec.describe FastMcp::Transports::RackTransport do
             error: {
               code: -32_600,
               message: 'Forbidden: Remote IP not allowed'
-            },
-            id: nil
+            }
           })])
       end
 

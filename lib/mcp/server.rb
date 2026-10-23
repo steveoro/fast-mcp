@@ -4,6 +4,7 @@ require 'json'
 require 'logger'
 require 'securerandom'
 require 'base64'
+require_relative 'json_rpc'
 require_relative 'transports/stdio_transport'
 require_relative 'transports/rack_transport'
 require_relative 'transports/authenticated_rack_transport'
@@ -54,8 +55,11 @@ module FastMcp
     #   non-empty, all YYYY-MM-DD strings, and none may be >= '2026-07-28' (modern era).
     # @param expose_internal_errors [Boolean] when true, sends the exception message to the client
     #   in internal-error responses. Off by default (backtraces disclose internal structure).
+    # @param instructions [String, #call, nil] MCP server instructions sent in the initialize
+    #   result: a String, or an object whose +call(request)+ returns a String or nil (+request+ is
+    #   the Rack request, or nil on stdio). Blank values are not sent; no length cap is applied.
     def initialize(name:, version:, logger: FastMcp::Logger.new, capabilities: {}, # rubocop:disable Metrics/ParameterLists
-                   protocol_versions: nil, expose_internal_errors: false)
+                   protocol_versions: nil, expose_internal_errors: false, instructions: nil)
       @name = name
       @version = version
       @tools = {}
@@ -75,6 +79,7 @@ module FastMcp
       @error_formatter = nil
       @filter_mode = :hide
       @expose_internal_errors = expose_internal_errors
+      @instructions = instructions
       @protocol_versions = validate_protocol_versions!(protocol_versions || HANDSHAKE_PROTOCOL_VERSIONS)
 
       # Merge with provided capabilities
@@ -84,6 +89,28 @@ module FastMcp
 
     # The list of handshake protocol versions this server advertises, newest first.
     attr_reader :protocol_versions
+
+    # The raw +instructions:+ value (String, callable or nil) given to Server.new.
+    attr_reader :instructions
+
+    # @return [Boolean] whether internal-error replies may carry the exception message
+    def expose_internal_errors?
+      @expose_internal_errors == true
+    end
+
+    # Resolves the instructions for one request.
+    #
+    # @param request [Rack::Request, nil] the request being served (nil on stdio)
+    # @return [String, nil] the stripped text, or nil when unset, blank, not a String, or when
+    #   the callable raises (the error is logged and the handshake goes on without instructions)
+    def instructions_for(request)
+      value = @instructions.respond_to?(:call) ? @instructions.call(request) : @instructions
+      text = value.is_a?(String) ? value.strip : nil
+      text unless text.nil? || text.empty?
+    rescue StandardError => e
+      @logger.error("instructions callable failed: #{e.class}: #{e.message}")
+      nil
+    end
 
     # The version negotiated in the most recent initialize, or nil before any handshake.
     attr_reader :negotiated_protocol_version
@@ -290,7 +317,7 @@ module FastMcp
     end
 
     # Handle incoming JSON-RPC request
-    def handle_request(json_str, headers: {}) # rubocop:disable Metrics/MethodLength, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
+    def handle_request(json_str, headers: {})
       begin
         request = JSON.parse(json_str)
       rescue JSON::ParserError, TypeError
@@ -312,63 +339,16 @@ module FastMcp
       id     = request['id']
       params = request['params'] || {}
 
-      # §1.6.3: jsonrpc must be exactly "2.0".
-      return send_error(-32_600, 'Invalid Request', id) unless request['jsonrpc'] == '2.0'
-
-      # §1.6.4: id must be a String, Integer or absent. Boolean, Hash, Array → reject.
-      unless id.nil? || id.is_a?(String) || id.is_a?(Integer)
-        return send_error(-32_600, 'Invalid Request: id must be a string or integer', nil)
-      end
-
-      # §1.6.4: method must be a String when present.
-      unless method.nil? || method.is_a?(String)
-        return send_error(-32_600, 'Invalid Request: method must be a string', id)
-      end
+      invalid = envelope_error(request)
+      return send_error(-32_600, invalid[:message], invalid[:id], **invalid.slice(:data)) if invalid
 
       # §1.6.5: notifications have a method but no id — never reply to them.
-      # Accept known notification methods silently; drop unknown ones with a debug log.
-      if id.nil? && !method.nil?
-        case method
-        when 'notifications/initialized'
-          handle_initialized_notification
-        when 'notifications/cancelled', 'notifications/roots/list_changed',
-             'notifications/progress'
-          nil # accepted silently
-        else
-          @logger.debug("Dropping unknown notification: #{method}")
-        end
-        return nil
-      end
+      return handle_notification(method) if id.nil? && !method.nil?
 
       # §1.6.6: client responses (result/error with no method) are accepted silently.
       return nil if method.nil?
 
-      case method
-      when 'ping'
-        send_result({}, id)
-      when 'initialize'
-        handle_initialize(params, id)
-      when 'tools/list'
-        handle_tools_list(id)
-      when 'tools/call'
-        handle_tools_call(params, headers, id)
-      when 'prompts/list'
-        handle_prompts_list(id)
-      when 'prompts/get'
-        handle_prompts_get(params, id)
-      when 'resources/list'
-        handle_resources_list(id)
-      when 'resources/templates/list'
-        handle_resources_templates_list(id)
-      when 'resources/read'
-        handle_resources_read(params, id)
-      when 'resources/subscribe'
-        handle_resources_subscribe(params, id)
-      when 'resources/unsubscribe'
-        handle_resources_unsubscribe(params, id)
-      else
-        send_error(-32_601, "Method not found: #{method}", id)
-      end
+      dispatch_request(method, params, headers, id)
     rescue StandardError => e
       # §1.6.7: internal errors are -32603; the message is hidden by default.
       # Logged in full server-side, never forwarded: backtraces disclose absolute paths and
@@ -441,6 +421,75 @@ module FastMcp
 
     private
 
+    # Validates the JSON-RPC envelope of an object message (§1.6.3-4, §1.14.1).
+    #
+    # @param request [Hash] the parsed message
+    # @return [Hash, nil] +{ message:, id:, data: }+ for a -32600 reply, or nil when valid
+    def envelope_error(request)
+      id = request['id']
+      method = request['method']
+      # §1.6.3: jsonrpc must be exactly "2.0".
+      return { message: 'Invalid Request', id: id } unless request['jsonrpc'] == '2.0'
+
+      # §1.14.1 (MCP Ruby SDK 1.8.1 #612): MCP rules out a null id. A request that carries
+      # "id": null is refused, not run as a notification. Client responses (result/error, no
+      # method) are never answered, whatever their id.
+      if request.key?('id') && id.nil? && !(request.key?('result') || request.key?('error'))
+        return { message: 'Invalid Request', id: nil, data: 'Request ID must not be null' }
+      end
+      # §1.6.4: id must be a String (validly encoded), Integer or absent; method a String when present.
+      unless id.nil? || JsonRpc.valid_id?(id)
+        return { message: 'Invalid Request: id must be a string or integer', id: nil }
+      end
+      return { message: 'Invalid Request: method must be a string', id: id } unless method.nil? || method.is_a?(String)
+
+      nil
+    end
+
+    # Accepts known notification methods silently and drops unknown ones with a debug log.
+    #
+    # @param method [String] the notification method
+    # @return [nil] notifications are never answered
+    def handle_notification(method)
+      case method
+      when 'notifications/initialized'
+        handle_initialized_notification
+      when 'notifications/cancelled', 'notifications/roots/list_changed', 'notifications/progress'
+        nil # accepted silently
+      else
+        @logger.debug("Dropping unknown notification: #{method}")
+      end
+      nil
+    end
+
+    # Routes a request to its handler.
+    def dispatch_request(method, params, headers, id)
+      case method
+      when 'ping' then send_result({}, id)
+      when 'initialize' then handle_initialize(params, id)
+      when 'tools/list' then handle_tools_list(id)
+      when 'tools/call' then handle_tools_call(params, headers, id)
+      when 'prompts/list' then handle_prompts_list(id)
+      when 'prompts/get' then handle_prompts_get(params, id)
+      when 'resources/list' then handle_resources_list(id)
+      when 'resources/templates/list' then handle_resources_templates_list(id)
+      when 'resources/read' then handle_resources_read(params, id)
+      when 'resources/subscribe', 'resources/unsubscribe' then handle_subscription_request(method, params, id)
+      else send_error(-32_601, "Method not found: #{method}", id)
+      end
+    end
+
+    # §1.14.3: resources/subscribe and resources/unsubscribe exist only when advertised.
+    def handle_subscription_request(method, params, id)
+      return send_error(-32_601, "Method not found: #{method}", id) unless resource_subscriptions_advertised?
+
+      if method == 'resources/subscribe'
+        handle_resources_subscribe(params, id)
+      else
+        handle_resources_unsubscribe(params, id)
+      end
+    end
+
     def handle_initialize(params, id)
       # Store client capabilities for later use
       @client_capabilities = params['capabilities'] || {}
@@ -462,6 +511,8 @@ module FastMcp
           version: @version
         }
       }
+      instructions = instructions_for(current_request)
+      response[:instructions] = instructions if instructions
 
       send_result(response, id)
     end
@@ -768,22 +819,23 @@ module FastMcp
       send_result({ unsubscribed: true }, id)
     end
 
-    # Notify clients about resource list changes
+    # Notify clients about resource list changes (§1.14.2-3: the spec's method name, and only
+    # when resources.listChanged is advertised)
     def notify_resource_list_changed
-      return unless @client_initialized
+      return unless @client_initialized && @capabilities.dig(:resources, :listChanged)
 
       notification = {
         jsonrpc: '2.0',
-        method: 'notifications/resources/listChanged',
+        method: 'notifications/resources/list_changed',
         params: {}
       }
 
       @transport.send_message(notification)
     end
 
-    # Notify clients that tools/list should be refreshed.
+    # Notify clients that tools/list should be refreshed (only when tools.listChanged is advertised).
     def notify_tool_list_changed
-      return unless @client_initialized
+      return unless @client_initialized && @capabilities.dig(:tools, :listChanged)
 
       @transport.send_message(
         jsonrpc: '2.0',
@@ -806,18 +858,14 @@ module FastMcp
       send_response(response)
     end
 
-    # Send a JSON-RPC error response
-    def send_error(code, message, id = nil)
-      response = {
-        jsonrpc: '2.0',
-        error: {
-          code: code,
-          message: message
-        },
-        id: id
-      }
+    # Send a JSON-RPC error response; the id member follows D-17 (FastMcp::JsonRpc).
+    def send_error(code, message, id = nil, data: nil)
+      send_response(JsonRpc.error_response(code, message, id, data: data))
+    end
 
-      send_response(response)
+    # §1.14.3: resources/subscribe and resources/unsubscribe exist only when advertised.
+    def resource_subscriptions_advertised?
+      @capabilities.dig(:resources, :subscribe) ? true : false
     end
 
     # Send a JSON-RPC response

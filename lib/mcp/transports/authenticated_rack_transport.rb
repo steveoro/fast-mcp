@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require_relative '../json_rpc'
 require_relative 'rack_transport'
 
 module FastMcp
@@ -59,14 +60,8 @@ module FastMcp
       def unauthorized_response(request)
         @logger.error('Unauthorized request: Invalid or missing authentication token')
         body = JSON.generate(
-          {
-            jsonrpc: '2.0',
-            error: {
-              code: -32_000,
-              message: 'Unauthorized: Invalid or missing authentication token'
-            },
-            id: extract_request_id(request)
-          }
+          FastMcp::JsonRpc.error_response(-32_000, 'Unauthorized: Invalid or missing authentication token',
+                                          extract_request_id(request))
         )
 
         [401, { 'Content-Type' => 'application/json' }, [body]]

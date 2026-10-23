@@ -3,6 +3,7 @@
 require 'json'
 require 'securerandom'
 require 'rack'
+require_relative '../json_rpc'
 require_relative 'base_transport'
 require_relative '../authentication'
 
@@ -336,31 +337,13 @@ module FastMcp
 
       def forbidden_response(message)
         [403, { 'Content-Type' => 'application/json' },
-         [JSON.generate(
-           {
-             jsonrpc: '2.0',
-             error: {
-               code: -32_600,
-               message: message
-             },
-             id: nil
-           }
-         )]]
+         [JSON.generate(FastMcp::JsonRpc.error_response(-32_600, message))]]
       end
 
       # Return a 404 endpoint not found response
       def endpoint_not_found_response
         [404, { 'Content-Type' => 'application/json' },
-         [JSON.generate(
-           {
-             jsonrpc: '2.0',
-             error: {
-               code: -32_601,
-               message: 'Endpoint not found'
-             },
-             id: nil
-           }
-         )]]
+         [JSON.generate(FastMcp::JsonRpc.error_response(-32_601, 'Endpoint not found'))]]
       end
 
       # Handle SSE connection request (§1.4 session semantics)
@@ -719,7 +702,8 @@ module FastMcp
       # Handle internal server errors
       def handle_internal_error(error)
         @logger.error("Error processing message: #{error.message}")
-        json_rpc_error_response(500, -32_603, "Internal error: #{error.message}")
+        expose = @server.respond_to?(:expose_internal_errors?) && @server.expose_internal_errors?
+        json_rpc_error_response(500, -32_603, expose ? "Internal error: #{error.message}" : 'Internal error')
       end
 
       # Raised by read_limited_body when the request exceeds @max_request_bytes.
@@ -763,13 +747,7 @@ module FastMcp
 
       def json_rpc_error_response(http_status, code, message, id = nil)
         [http_status, { 'Content-Type' => 'application/json' },
-         [JSON.generate(
-           {
-             jsonrpc: '2.0',
-             error: { code: code, message: message },
-             id: id
-           }
-         )]]
+         [JSON.generate(FastMcp::JsonRpc.error_response(code, message, id))]]
       end
 
       # Get the appropriate server for this request
