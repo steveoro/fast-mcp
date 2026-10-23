@@ -262,4 +262,26 @@ RSpec.describe FastMcp::Server, 'strict JSON-RPC 2.0 (§1.6)' do
       expect(msgs.last[:jsonrpc]).to eq('2.0')
     end
   end
+
+  describe 'params and method-less messages (PR #4 review)' do
+    it 'answers array params with -32602' do
+      server.handle_request(JSON.generate(jsonrpc: '2.0', id: 1, method: 'tools/list', params: [1]))
+      expect(last_msg).to include(id: 1, error: { code: -32_602, message: 'Invalid params: params must be an object' })
+    end
+
+    it 'answers string params with -32602' do
+      server.handle_request(JSON.generate(jsonrpc: '2.0', id: 2, method: 'tools/call', params: 'x'))
+      expect(last_msg[:error][:code]).to eq(-32_602)
+    end
+
+    it 'leaves a notification with bad params unanswered' do
+      server.handle_request(JSON.generate(jsonrpc: '2.0', method: 'notifications/progress', params: [1]))
+      expect(captured).to be_empty
+    end
+
+    it 'answers a message with an id but no method, result or error with -32600' do
+      server.handle_request('{"jsonrpc":"2.0","id":1}')
+      expect(last_msg).to include(id: 1, error: { code: -32_600, message: 'Invalid Request' })
+    end
+  end
 end

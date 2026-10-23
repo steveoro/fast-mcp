@@ -82,4 +82,19 @@ RSpec.describe FastMcp::Server, 'instructions (§1.13)' do
 
     expect(initialize_result(build_server(text))[:instructions].length).to eq(10_000)
   end
+
+  describe '#start transport options (PR #4 review)' do
+    it 'passes input:, output: and max_request_bytes: to the stdio transport' do
+      stdio_logger = FastMcp::Logger.new
+      server = described_class.new(name: 't', version: '0', logger: stdio_logger)
+      output = StringIO.new
+      stdio = instance_double(FastMcp::Transports::StdioTransport, start: nil)
+      allow(FastMcp::Transports::StdioTransport).to receive(:new).and_return(stdio)
+
+      server.start(output: output, max_request_bytes: 1024)
+
+      expect(FastMcp::Transports::StdioTransport)
+        .to have_received(:new).with(server, logger: stdio_logger, output: output, max_request_bytes: 1024)
+    end
+  end
 end

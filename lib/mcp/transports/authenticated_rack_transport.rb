@@ -13,7 +13,8 @@ module FastMcp
     #                    { subject:, scopes: [], expires_at:, resource: } or nil on failure.
     #   required_scopes: an Array<String> of scopes the token must carry.
     #
-    # These options are accepted but ignored until an implementer enables them. The design matches
+    # Both names are reserved: passing either raises ArgumentError, so a server configured with only
+    # a token_verifier can't silently run unauthenticated. The design matches
     # the Ruby SDK 1.8.0 OAuth additions (iss+aud required, alg:none refused, no HMAC/RSA mixing).
     class AuthenticatedRackTransport < RackTransport
       def initialize(app, server, options = {})
@@ -23,9 +24,14 @@ module FastMcp
         @auth_header_name = options[:auth_header_name] || 'Authorization'
         @auth_exempt_paths = options[:auth_exempt_paths] || []
         @auth_enabled = !@auth_token.nil?
-        # token_verifier / required_scopes: reserved, not implemented.
+        # token_verifier / required_scopes: reserved, not implemented. Refuse them rather than
+        # fail open (a server configured with only a verifier would otherwise be unauthenticated).
         @token_verifier  = options[:token_verifier]
         @required_scopes = Array(options[:required_scopes])
+        if @token_verifier || @required_scopes.any?
+          raise ArgumentError, 'token_verifier:/required_scopes: are reserved and not implemented in fast-mcp 1.8'
+        end
+
         # A browser preflight has to be told it may send whichever header carries the credential.
         @cors_allowed_headers += [@auth_header_name]
       end

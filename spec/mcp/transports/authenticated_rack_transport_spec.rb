@@ -374,4 +374,16 @@ RSpec.describe FastMcp::Transports::AuthenticatedRackTransport do
       end
     end
   end
+
+  describe 'reserved OAuth options (PR #4 review)' do
+    it 'refuses token_verifier: instead of silently running unauthenticated' do
+      expect { described_class.new(app, server, logger: logger, token_verifier: ->(_token) {}) }
+        .to raise_error(ArgumentError, /reserved and not implemented/)
+    end
+
+    it 'refuses required_scopes:' do
+      expect { described_class.new(app, server, logger: logger, auth_token: 't', required_scopes: %w[read]) }
+        .to raise_error(ArgumentError, /reserved and not implemented/)
+    end
+  end
 end

@@ -142,4 +142,10 @@ RSpec.describe FastMcp::Server, 'per-session resource subscriptions (§1.3)' do
       expect(remaining).not_to include(session_id)
     end
   end
+
+  it 'does not create subscription entries for URIs notified without subscribers' do
+    server.notify_resource_updated('res://never-subscribed')
+
+    expect(server.instance_variable_get(:@resource_subscriptions)).not_to have_key('res://never-subscribed')
+  end
 end

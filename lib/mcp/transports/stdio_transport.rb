@@ -10,8 +10,9 @@ module FastMcp
     # +output+ (default $stdout). The +input:+ and +output:+ options let callers redirect IO so
     # that incidental Rails/gem log lines never corrupt the JSON stream (§1.2, §1.9, PR-2 §2.13).
     #
-    # Line-length cap: lines longer than +max_request_bytes+ bytes are discarded and answered with
-    # a -32600 error. The next valid line is still processed.
+    # Line-length cap (opt-in, off by default): lines longer than +max_request_bytes+ bytes, not
+    # counting the newline, are discarded and answered with a -32600 error. The rest of the line
+    # is drained in bounded chunks and the next valid line is still processed.
     #
     # Frames (§1.14.4, MCP Ruby SDK 1.8.1 #623/#625) are stripped as bytes, so a bad byte can't
     # raise under any locale. A frame that isn't valid UTF-8 gets -32700; any other failure gets
@@ -91,10 +92,11 @@ module FastMcp
         line = inp.gets("\n", limit + 1)
         return nil if line.nil? # EOF
 
-        if line.bytesize > limit
-          # Drain the rest of this line so the next read starts clean.
-          inp.gets unless line.end_with?("\n")
-          @logger.warn("Received over-limit stdio line (#{line.bytesize} bytes), discarding")
+        if line.chomp.bytesize > limit
+          # Drain the rest of this line in bounded chunks so the next read starts clean.
+          chunk = line
+          chunk = inp.gets("\n", limit + 1) until chunk.nil? || chunk.end_with?("\n")
+          @logger.warn("Received over-limit stdio line (> #{limit} bytes), discarding")
           send_error(-32_600, "Request too large (limit #{limit} bytes)", nil)
           return :retry
         end

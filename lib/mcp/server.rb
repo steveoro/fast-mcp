@@ -281,7 +281,11 @@ module FastMcp
     end
 
     # Start the server using stdio transport
-    def start
+    # Start the server on the stdio transport.
+    #
+    # @param transport_options [Hash] passed to StdioTransport.new (+input:+, +output:+,
+    #   +max_request_bytes:+), e.g. to keep log lines off the JSON stream
+    def start(**transport_options)
       @logger.transport = :stdio
       @logger.info("Starting MCP server: #{@name} v#{@version}")
       @logger.info("Available tools: #{@tools.keys.join(', ')}")
@@ -289,7 +293,7 @@ module FastMcp
 
       # Use STDIO transport by default
       @transport_klass = FastMcp::Transports::StdioTransport
-      @transport = @transport_klass.new(self, logger: @logger)
+      @transport = @transport_klass.new(self, logger: @logger, **transport_options)
       @transport.start
     end
 
@@ -345,8 +349,10 @@ module FastMcp
       # §1.6.5: notifications have a method but no id — never reply to them.
       return handle_notification(method) if id.nil? && !method.nil?
 
-      # §1.6.6: client responses (result/error with no method) are accepted silently.
-      return nil if method.nil?
+      return handle_methodless_message(request, id) if method.nil?
+
+      # §1.6.4: params, when present, must be an object (MCP never uses positional params).
+      return send_error(-32_602, 'Invalid params: params must be an object', id) unless params.is_a?(Hash)
 
       dispatch_request(method, params, headers, id)
     rescue StandardError => e
@@ -365,7 +371,7 @@ module FastMcp
       return unless @client_initialized
 
       session_keys = @subscriptions_mutex.synchronize do
-        @resource_subscriptions[uri]&.to_a
+        @resource_subscriptions.fetch(uri, nil)&.to_a
       end
       return if session_keys.nil? || session_keys.empty?
 
@@ -444,6 +450,14 @@ module FastMcp
       return { message: 'Invalid Request: method must be a string', id: id } unless method.nil? || method.is_a?(String)
 
       nil
+    end
+
+    # §1.6.6: client responses (result/error, no method) are accepted silently; a message with
+    # an id but neither a method nor a result/error is an invalid request.
+    def handle_methodless_message(request, id)
+      return nil if request.key?('result') || request.key?('error')
+
+      send_error(-32_600, 'Invalid Request', id)
     end
 
     # Accepts known notification methods silently and drops unknown ones with a debug log.
