@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.8.0] - 2026-10-21
+## [1.8.0] - 2026-10-23
 
 ### Added
 
@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `expose_internal_errors:` option on `Server` (default `false`); when `false`, exception messages are never forwarded to the client.
 - `input:` / `output:` IO options on `StdioTransport` (default `$stdin` / `$stdout`) so that Rails log lines never contaminate the JSON stream.
 - Reserved `token_verifier:` and `required_scopes:` hooks on `AuthenticatedRackTransport` (OAuth 2.1 duck-type interface; **not implemented** — see docs).
+- `Server.new(instructions:)` (a String, or a callable that takes the request and returns a String or nil); sent in the `initialize` result when present. `Server#instructions` returns the raw value, `Server#instructions_for(request)` the resolved text.
+- `FastMcp::JsonRpc` (`error_response`, `error_id_member`, `valid_id?`): one builder for every JSON-RPC error reply, in the server and all transports.
 
 ### Changed (behaviour)
 
@@ -30,6 +32,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `resources/unsubscribe` never actually removed subscriptions (was keyed by request id, now keyed by session id, matching subscribe).
 - Unknown notifications (e.g. `notifications/cancelled`) got a `-32601` reply with `id: null`; they are now silently dropped.
+- A request with `"id": null` is refused with `-32600` (`data: "Request ID must not be null"`) and not executed; id-less request methods are dropped as notifications (MCP Ruby SDK 1.8.1 #612). Client responses are never answered, whatever their id.
+- Error replies omit `id` when the request id couldn't be read or isn't valid (missing, `null`, objects, booleans, invalid UTF-8), as the MCP Ruby SDK 1.8.1 does (#615).
+- `notifications/resources/list_changed` was sent as `notifications/resources/listChanged`.
+- `resources/subscribe` and `resources/unsubscribe` are refused (`-32601`), and list-changed notifications are suppressed, when the capability isn't advertised.
+- stdio: frames are stripped as bytes; a frame that isn't valid UTF-8 gets `-32700`, other failures `-32603` without exception text (was `-32000` with the message); a reply that can't be encoded no longer escapes the read loop.
+- `RackTransport` internal errors no longer forward the exception message unless `expose_internal_errors: true`.
+- The Ruby SDK interop spec actually runs (it pointed at a missing path and used a client API the SDK doesn't have).
 
 ## [1.7.1] - 2026-09-22
 
