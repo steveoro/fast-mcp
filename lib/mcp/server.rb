@@ -816,7 +816,7 @@ module FastMcp
 
     # Handle resources/unsubscribe request (§1.3: keyed by session, not request id)
     def handle_resources_unsubscribe(params, id)
-      return unless @client_initialized
+      return send_error(-32_600, 'Invalid Request: client not initialized', id) unless @client_initialized
 
       uri = params['uri']
       unless uri
