@@ -92,7 +92,7 @@ module FastMcp
         line = inp.gets("\n", limit + 1)
         return nil if line.nil? # EOF
 
-        if line.chomp.bytesize > limit
+        if line.chomp("\n").bytesize > limit
           # Drain the rest of this line in bounded chunks so the next read starts clean.
           chunk = line
           chunk = inp.gets("\n", limit + 1) until chunk.nil? || chunk.end_with?("\n")
