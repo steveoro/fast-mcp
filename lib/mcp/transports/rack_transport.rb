@@ -564,12 +564,15 @@ module FastMcp
         return unless @sse_idle_timeout
 
         now = Time.now
-        idle_ids = @sse_clients_mutex.synchronize do
-          @sse_clients.select { |_id, client| now - last_activity(client) > @sse_idle_timeout }.keys
+        # Select and remove under one lock, so a session that POSTs (or a stream that takes over
+        # an id) after the check can't be closed by mistake.
+        idle = @sse_clients_mutex.synchronize do
+          @sse_clients.select { |_id, client| now - last_activity(client) > @sse_idle_timeout }
+                      .each_key { |client_id| @sse_clients.delete(client_id) }
         end
-        idle_ids.each do |client_id|
+        idle.each do |client_id, client|
           @logger.info("SSE client #{client_id} idle for more than #{@sse_idle_timeout}s, closing")
-          close_sse_client(client_id)
+          close_removed_sse_client(client_id, client)
         end
       end
 
@@ -577,14 +580,16 @@ module FastMcp
         client[:last_active_at] || client[:connected_at]
       end
 
-      # Closes one client's stream and unregisters it.
-      def close_sse_client(client_id)
-        stream = @sse_clients[client_id]&.fetch(:stream, nil)
-        stream.close if stream.respond_to?(:close) && !(stream.respond_to?(:closed?) && stream.closed?)
+      # Closes the stream of a client already removed from @sse_clients, under its write mutex,
+      # and drops its resource subscriptions.
+      def close_removed_sse_client(client_id, client)
+        stream = client[:stream]
+        close = -> { stream.close if stream.respond_to?(:close) && !(stream.respond_to?(:closed?) && stream.closed?) }
+        client[:mutex] ? client[:mutex].synchronize(&close) : close.call
       rescue StandardError => e
         @logger.error("Error closing idle SSE client #{client_id}: #{e.message}")
       ensure
-        unregister_sse_client(client_id)
+        @server.remove_subscriber(client_id) if @server.respond_to?(:remove_subscriber)
       end
 
       # Marks a session as active (a POST arrived for it).

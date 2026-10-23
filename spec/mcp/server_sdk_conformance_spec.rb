@@ -133,4 +133,14 @@ RSpec.describe FastMcp::Server, 'Ruby SDK 1.8.1 conformance (§1.14)' do
         .to eq(jsonrpc: '2.0', error: { code: -32_600, message: 'Invalid Request' })
     end
   end
+
+  describe 'subscribe before notifications/initialized' do
+    %w[resources/subscribe resources/unsubscribe].each do |method|
+      it "answers #{method} with -32600 instead of leaving the request unanswered" do
+        request(jsonrpc: '2.0', id: 8, method: method, params: { uri: 'counter' })
+
+        expect(captured.last).to include(id: 8, error: { code: -32_600, message: 'Invalid Request: client not initialized' })
+      end
+    end
+  end
 end

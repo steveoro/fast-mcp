@@ -149,4 +149,38 @@ RSpec.describe FastMcp::Transports::RackTransport, 'SSE session routing (ยง1.3/ย
     expect(status).to eq(404)
     expect(JSON.parse(body.join)).not_to have_key('id')
   end
+
+  context 'on the Rails ActionController::Live path' do
+    let(:transport_options) { { sse_idle_timeout: 60 } }
+    let(:stream) { StringIO.new }
+    let(:controller) { double('controller', response: double('response', stream: stream)) }
+
+    before { stub_const('ActionController::Live', Module.new) }
+
+    def open_rails_sse
+      env = Rack::MockRequest.env_for('/mcp/sse', method: 'GET', 'REMOTE_ADDR' => '127.0.0.1', 'HTTP_HOST' => 'localhost')
+      env['action_controller.instance'] = controller
+      status, = transport.call(env)
+      [status, stream.string[/^event: endpoint\ndata: (.+)$/, 1]]
+    end
+
+    it 'sends the endpoint event with a server-issued sessionId that a POST can use' do
+      status, endpoint = open_rails_sse
+
+      expect(status).to eq(200)
+      expect(endpoint).to start_with('/mcp/messages?sessionId=')
+      expect(post(endpoint, jsonrpc: '2.0', id: 1, method: 'ping').first).to eq(200)
+      expect(messages_on(stream)).to include('jsonrpc' => '2.0', 'id' => 1, 'result' => {})
+    end
+
+    it 'is reaped by the request-driven reaper after the idle timeout' do
+      _status, endpoint = open_rails_sse
+      allow(Time).to receive(:now).and_return(Time.now + 120)
+
+      post('/mcp/messages?sessionId=other', jsonrpc: '2.0', id: 2, method: 'ping')
+
+      expect(transport.sse_clients).not_to have_key(session_id_from(endpoint))
+      expect(stream).to be_closed
+    end
+  end
 end
